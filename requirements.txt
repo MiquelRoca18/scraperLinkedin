@@ -1,0 +1,4 @@
+staffspy[browser]
+pandas
+python-dotenv
+beautifulsoup4
