@@ -34,13 +34,18 @@ def main():
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
 
     if mode == "2":
-        # Perfil por URL: mismas columnas que conexiones (name, position, company, location, emails, phones, etc.)
-        perfil = scrape_profile_by_url(account, url)
+        # Perfil por URL: perfil + conexiones en común / personas que quizá conozcas (si el navegador las muestra)
+        perfil, sugeridos = scrape_profile_by_url(account, url)
         df_perfil = pd.DataFrame([perfil])
         f_perfil = f"output/perfil_url_{username}_{timestamp}.csv"
         df_perfil.to_csv(f_perfil, index=False, encoding="utf-8-sig")
         print(f"\n✅ Perfil guardado en: {f_perfil}")
-        print("ℹ️  La lista de contactos de ese perfil no es accesible (solo la de tu cuenta). Correo/teléfono solo se rellenan si ese perfil es una de tus conexiones.")
+        if sugeridos:
+            df_sug = pd.DataFrame(sugeridos)
+            f_sug = f"output/sugeridos_url_{username}_{timestamp}.csv"
+            df_sug.to_csv(f_sug, index=False, encoding="utf-8-sig")
+            print(f"✅ {len(sugeridos)} sugerencias (conexiones en común / PYMK) guardadas en: {f_sug}")
+        print("ℹ️  La lista completa de contactos de ese perfil no es accesible; solo lo que LinkedIn muestra (conexiones en común, personas que quizá conozcas).")
         return
 
     # Modo por defecto: conexiones de mi cuenta

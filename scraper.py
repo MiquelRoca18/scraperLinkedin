@@ -532,13 +532,76 @@ def _extract_person_from_dom(driver) -> Optional[Dict]:
     return None
 
 
+def _extract_suggested_connections_from_page(driver, current_public_id: str) -> list:
+    """Extrae de la página del perfil los enlaces a 'conexiones en común' y 'personas que quizá conozcas'.
+
+    LinkedIn muestra en el lateral (o en la página) un bloque con conexiones en común y a veces
+    sugerencias (PYMK). Buscamos todos los enlaces a perfiles /in/SLUG que no sean el perfil
+    actual y los devolvemos con source='mutual' o 'pymk' si logramos identificar el bloque.
+    """
+    from selenium.webdriver.common.by import By
+
+    result = []
+    seen = set()
+    current_public_id = (current_public_id or "").strip().lower()
+
+    try:
+        # Pequeño scroll para que el sidebar cargue (contenido lazy)
+        driver.execute_script("window.scrollTo(0, 400);")
+        time.sleep(1)
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.5)
+
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='linkedin.com/in/']")
+        for a in links:
+            try:
+                href = a.get_attribute("href") or ""
+                m = re.search(r"linkedin\.com/in/([^/?]+)", href)
+                if not m:
+                    continue
+                slug = m.group(1).rstrip("/").lower()
+                if slug == current_public_id or len(slug) < 3:
+                    continue
+                if slug in seen:
+                    continue
+                seen.add(slug)
+                name = (a.text or "").strip()
+                if len(name) > 120:
+                    name = name[:120]
+                # Intentar etiquetar: si el enlace está en un contenedor con "mutual" o "conexiones en común" -> mutual
+                source = "suggested"
+                try:
+                    parent = a.find_element(By.XPATH, "./ancestor::*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mutual') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'conexiones en común') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'conexión en común')][1]")
+                    if parent:
+                        source = "mutual"
+                except Exception:
+                    try:
+                        parent = a.find_element(By.XPATH, "./ancestor::*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'personas que quizá') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'people you may know')][1]")
+                        if parent:
+                            source = "pymk"
+                    except Exception:
+                        pass
+                result.append({
+                    "profile_id": slug,
+                    "name": name or None,
+                    "profile_link": f"https://www.linkedin.com/in/{slug}/",
+                    "source": source,
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return result
+
+
 def _scrape_profile_via_browser(
     account: LinkedInAccount, url: str, public_id: str
-) -> Optional[Dict]:
+) -> Tuple[Optional[Dict], list]:
     """Carga el perfil en un navegador real con las cookies de la sesión y extrae JSON-LD.
 
     LinkedIn sirve el JSON-LD cuando la página se renderiza.
-    Usa el mismo WebDriver que StaffSpy (get_webdriver) para evitar problemas de chromedriver.
+    También extrae la lista de conexiones en común / personas que quizá conozcas si aparecen.
+    Devuelve (dict_perfil, lista_sugeridos).
     """
     driver = None
     try:
@@ -549,7 +612,7 @@ def _scrape_profile_via_browser(
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.common.by import By
     except ImportError:
-        return None
+        return None, []
     try:
         driver = get_webdriver(None)
     except Exception:
@@ -565,7 +628,7 @@ def _scrape_profile_via_browser(
             driver = webdriver.Chrome(options=opts)
         except Exception as e:
             print(f"   (Navegador no disponible para fallback: {e})")
-            return None
+            return None, []
     try:
         driver.get("https://www.linkedin.com")
         time.sleep(2)
@@ -635,14 +698,18 @@ def _scrape_profile_via_browser(
             }
             if internal_id:
                 out["_internal_id"] = internal_id  # clave interna, no se guarda en CSV
-            return out
+            # Extraer conexiones en común / personas que quizá conozcas de la misma página
+            suggested = _extract_suggested_connections_from_page(driver, public_id)
+            if suggested:
+                print(f"   [LOG] Encontradas {len(suggested)} sugerencias (conexiones en común / PYMK)")
+            return out, suggested
     finally:
         if driver:
             try:
                 driver.quit()
             except Exception:
                 pass
-    return None
+    return None, []
 
 
 def _scrape_profile_by_url_fallback(
@@ -712,12 +779,14 @@ def _scrape_profile_by_url_fallback(
     return data
 
 
-def scrape_profile_by_url(account: LinkedInAccount, url: str) -> Dict:
+def scrape_profile_by_url(account: LinkedInAccount, url: str) -> Tuple[Dict, list]:
     """Scrapea un perfil por URL con los mismos campos que las conexiones.
 
     Primero intenta el API interno (profileView + fetch_all_info_for_employee)
     para obtener nombre, empresa, ubicación, email/teléfono si está visible.
     Si no se puede resolver id/urn, extrae lo posible del JSON de profileView y del HTML.
+    Cuando se usa el navegador, además extrae conexiones en común / personas que quizá conozcas.
+    Devuelve (dict_perfil, lista_sugeridos).
     """
     print(f"\n📄 Scrapeando perfil por URL:\n   {url}")
     m = re.search(r"linkedin\.com/in/([^/?]+)", url)
@@ -768,7 +837,7 @@ def scrape_profile_by_url(account: LinkedInAccount, url: str) -> Dict:
                 ContactInfoFetcher(account.session).fetch_contact_info(staff)
             except Exception:
                 pass
-            return normalize_profile_row(pd.Series(staff.to_dict()))
+            return normalize_profile_row(pd.Series(staff.to_dict())), []
         except Exception as e:
             print(f"   [LOG] fetch_all_info_for_employee falló: {e}")
             pass
@@ -794,12 +863,12 @@ def scrape_profile_by_url(account: LinkedInAccount, url: str) -> Dict:
     else:
         print(f"   [LOG] No hay ID interno para contact info (resolved={bool(resolved)}, profile_view_json={bool(profile_view_json)})")
     if has_data:
-        return result
+        return result, []
 
     # Fallback 2: cargar perfil en navegador real (como ScrapFly / linkedin-mcp-server)
-    # LinkedIn suele incluir JSON-LD solo cuando la página se renderiza
+    # LinkedIn suele incluir JSON-LD solo cuando la página se renderiza; además extraemos sugeridos
     print("   ⚠️  Probando con navegador (Chrome headless) para extraer JSON-LD del perfil…")
-    browser_result = _scrape_profile_via_browser(account, url, public_id)
+    browser_result, suggested = _scrape_profile_via_browser(account, url, public_id)
     if browser_result and (browser_result.get("name") or browser_result.get("position") or browser_result.get("company")):
         # Contact info: usar ID del navegador si no teníamos uno (profileView 410)
         bid = browser_result.pop("_internal_id", None)
@@ -808,11 +877,11 @@ def scrape_profile_by_url(account: LinkedInAccount, url: str) -> Dict:
         if cid and curn:
             print(f"   [LOG] Fusionando contact info en resultado del navegador (internal_id={cid[:25]}...)")
             _fetch_and_merge_contact_info(account, cid, curn, public_id, url, browser_result)
-        return browser_result
+        return browser_result, suggested
 
     if not has_data:
         print("   ⚠️  No se pudo obtener datos del perfil (API, HTML ni navegador).")
-    return result
+    return result, []
 
 
 def scrape_single_profile(account: LinkedInAccount, username: str) -> Dict:

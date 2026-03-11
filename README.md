@@ -5,7 +5,19 @@ Script en Python para extraer datos de perfiles de LinkedIn (nombre, posición, 
 ## Modos
 
 1. **Conexiones de mi cuenta**: perfil del usuario logueado + lista de contactos con emails/teléfonos (cuando están disponibles).
-2. **Perfil por URL**: extrae los mismos campos de un perfil dado su URL (email/teléfono solo si es tu conexión).
+2. **Perfil por URL**: extrae los mismos campos de un perfil dado su URL (email/teléfono solo si es tu conexión). Si se usa el navegador para cargar la página, además se extraen **conexiones en común** y **personas que quizá conozcas** (los bloques que LinkedIn muestra en el lateral) y se guardan en un CSV aparte.
+
+## Cómo funciona el modo “Perfil por URL”
+
+1. Se intenta obtener el perfil por API (profileView). Si LinkedIn devuelve 410 u otro error, se pasa al siguiente paso.
+2. Se intenta obtener datos básicos del HTML con la sesión (requests). Si no hay suficiente información, se usa el navegador.
+3. **Navegador**: se abre Chrome (o Firefox), se inyectan las cookies de tu sesión, se carga la URL del perfil y se recarga la página para evitar “error al cargar”. Del HTML ya renderizado se extrae:
+   - Nombre, headline, empresa, ubicación (JSON-LD o DOM).
+   - El **ID interno** del perfil (para poder pedir email/teléfono si es tu conexión).
+4. Con ese ID se llama al endpoint de **contact info** de LinkedIn; solo devuelve email/teléfono si esa persona es **tu conexión de 1º**.
+5. En la **misma página** del perfil se buscan enlaces a otros perfiles en los bloques de “conexiones en común” y “personas que quizá conozcas”. Se extraen `profile_id`, nombre (si aparece), URL y si viene de “mutual” o “pymk”. Esa lista se guarda en `output/sugeridos_url_<usuario>_<timestamp>.csv`.
+
+LinkedIn **no** permite ver la lista completa de contactos de otro usuario; solo lo que muestra en esa página (un subconjunto de conexiones en común y sugerencias).
 
 ## Requisitos
 
@@ -27,7 +39,16 @@ Copia las variables de entorno en un archivo `.env` (no se sube al repo):
 - `LOG_LEVEL`: nivel de log de StaffSpy (0=errores, 1=info, 2=debug).
 - `BROWSER_PROFILE_WAIT`: segundos de espera al cargar el perfil en el navegador (modo 2).
 
-La primera vez que ejecutes el script se abrirá el navegador para iniciar sesión en LinkedIn; la sesión se guarda en `session.pkl` para siguientes ejecuciones.
+## Primera vez: iniciar sesión en LinkedIn
+
+La **primera vez** que ejecutes el script no existirá el archivo `session.pkl`, así que el programa abrirá **automáticamente un navegador** (Chrome o Firefox):
+
+1. Ejecuta `python main.py` y elige modo 1 o 2.
+2. Cuando se abra el navegador, **inicia sesión en LinkedIn** con tu cuenta (email y contraseña).
+3. Una vez dentro de LinkedIn, cierra el navegador o deja que el script continúe.
+4. El script **creará automáticamente** el archivo `session.pkl` en la carpeta del proyecto con la sesión guardada.
+
+A partir de la siguiente ejecución, el script usará `session.pkl` y **no volverá a pedir iniciar sesión** (salvo que borres ese archivo o caduque la sesión). No hace falta configurar nada más para el login: todo es automático la primera vez.
 
 ## Uso
 
@@ -35,7 +56,10 @@ La primera vez que ejecutes el script se abrirá el navegador para iniciar sesi�
 python main.py
 ```
 
-Elige el modo (1 o 2) y pega la URL del perfil. Los CSV se guardan en `output/`.
+Elige el modo (1 o 2) y pega la URL del perfil. Los CSV se guardan en `output/`:
+
+- **Modo 1**: `perfil_<usuario>_<timestamp>.csv`, `conexiones_<usuario>_<timestamp>.csv`
+- **Modo 2**: `perfil_url_<usuario>_<timestamp>.csv` y, si el navegador encontró sugeridos, `sugeridos_url_<usuario>_<timestamp>.csv` (columnas: `profile_id`, `name`, `profile_link`, `source` donde `source` es `mutual`, `pymk` o `suggested`)
 
 ## Notas
 
