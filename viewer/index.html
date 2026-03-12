@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contactos de LinkedIn</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f4f4f6; color: #111; min-height: 100vh; transition: background .25s, color .25s; }
+
+    /* ── Dark mode ── */
+    body.dark { background: #0f0f12; color: #e4e4e7; }
+    body.dark .header { background: #18181b; border-bottom-color: #27272a; }
+    body.dark .btn-theme { background: #27272a; color: #e4e4e7; }
+    body.dark #auth-box { background: #18181b; border-color: #27272a; }
+    body.dark #auth-box input { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .scrape-card { background: #18181b; border-color: #27272a; }
+    body.dark .scrape-card p { color: #a1a1aa; }
+    body.dark .scrape-status { color: #a1a1aa; }
+    body.dark .btn-outline { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .btn-outline:hover { background: #3f3f46; }
+    body.dark .list-head h2 { color: #fafafa; }
+    body.dark .list-summary { color: #a1a1aa; }
+    body.dark .table-outer { background: #18181b; border-color: #27272a; }
+    body.dark .exports-table th { background: #1f1f23; color: #a1a1aa; border-bottom-color: #27272a; }
+    body.dark .exports-table td { border-bottom-color: #27272a; }
+    body.dark .exports-table tr:hover td { background: #1c1c1f; }
+    body.dark .dd-menu { background: #27272a; border-color: #3f3f46; }
+    body.dark .dd-menu a, body.dark .dd-menu button { color: #e4e4e7; }
+    body.dark .dd-menu a:hover, body.dark .dd-menu button:hover { background: #3f3f46; }
+    body.dark .detail-toolbar { background: #18181b; border-color: #27272a; }
+    body.dark .search-box { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .pill { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .detail-dlbar { background: #1c1c1f; border-color: #27272a; color: #a1a1aa; }
+    body.dark .detail-dlbar select { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .pgbtns button { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .pgbtns button:hover { background: #3f3f46; }
+    body.dark .detail-table-wrap { background: #18181b; border-color: #27272a; }
+    body.dark .dtable th { background: #1f1f23; color: #a1a1aa; }
+    body.dark .dtable th:hover { background: #2a2a2e; }
+    body.dark .dtable td { border-bottom-color: #27272a; }
+    body.dark .dtable tr:hover td { background: #1c1c1f; }
+
+    /* ── Header ── */
+    .header { display: flex; align-items: center; justify-content: space-between; padding: .9rem 1.5rem; background: #fff; border-bottom: 1px solid #e2e2e4; position: sticky; top: 0; z-index: 100; }
+    .header h1 { font-size: 1.25rem; font-weight: 700; }
+    .btn-theme { width: 34px; height: 34px; border: none; border-radius: 8px; background: #f0f0f2; cursor: pointer; font-size: 1rem; }
+
+    /* ── Container ── */
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 1.5rem; }
+
+    /* ── Auth ── */
+    #auth-box { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px; padding: 1.5rem; max-width: 380px; margin-bottom: 1.5rem; }
+    #auth-box label { display: block; margin-bottom: .5rem; font-weight: 500; }
+    #auth-box input { display: block; width: 100%; padding: .55rem .75rem; border: 1px solid #ccc; border-radius: 8px; font-size: 1rem; margin-bottom: .5rem; }
+    .err { color: #c00; font-size: .9rem; margin-top: .35rem; }
+
+    /* ── Card scrape ── */
+    .scrape-card { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1.75rem; }
+    .scrape-card h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: .4rem; }
+    .scrape-card p { font-size: .93rem; color: #555; margin-bottom: .9rem; }
+    .scrape-status { font-size: .9rem; color: #555; margin-top: .4rem; }
+    .scrape-status.err { color: #c00; }
+
+    /* ── Botones generales ── */
+    .btn { display: inline-block; padding: .48rem .9rem; border-radius: 7px; border: none; cursor: pointer; font-size: .88rem; font-weight: 500; }
+    .btn-blue { background: #0a66c2; color: #fff; }
+    .btn-blue:hover { background: #004182; }
+    .btn-blue:disabled { background: #888; cursor: not-allowed; }
+    .btn-outline { background: #fff; border: 1px solid #ccc; color: #333; }
+    .btn-outline:hover { background: #f0f0f2; }
+    .btn-green { background: #107c41; color: #fff; }
+    .btn-green:hover { background: #0b5e30; }
+    .btn-red { background: #c00; color: #fff; }
+    .btn-red:hover { background: #900; }
+    .btn-teal { background: #0d9488; color: #fff; }
+    .btn-teal:hover { background: #0f766e; }
+
+    /* ── Sección exportaciones ── */
+    #section-list { }
+    .list-head { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: .75rem; margin-bottom: .9rem; }
+    .list-head h2 { font-size: 1.15rem; font-weight: 600; }
+    .list-summary { font-size: .9rem; color: #666; margin-top: .15rem; }
+
+    .table-outer { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px; overflow: visible; }
+    .exports-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    .exports-table th { background: #f5f5f7; font-weight: 600; color: #444; padding: .7rem 1rem; text-align: left; border-bottom: 1px solid #e2e2e4; }
+    .exports-table td { padding: .7rem 1rem; border-bottom: 1px solid #f0f0f2; vertical-align: middle; }
+    .exports-table tr:last-child td { border-bottom: none; }
+    .exports-table tr:hover td { background: #fafafa; }
+
+    .actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+
+    /* ── Dropdown ── */
+    .dd-wrap { position: relative; display: inline-block; }
+    .dd-menu { display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: 130px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,.12); z-index: 200; padding: .25rem; }
+    .dd-wrap.open .dd-menu { display: block; }
+    .dd-menu a, .dd-menu button { display: block; width: 100%; text-align: left; padding: .5rem .75rem; border-radius: 6px; border: none; background: none; cursor: pointer; font-size: .9rem; color: #111; text-decoration: none; }
+    .dd-menu a:hover, .dd-menu button:hover { background: #f0f0f2; }
+
+    /* ── Vista detalle ── */
+    #section-detail { display: none; margin-top: 2rem; }
+    .detail-topbar { background: #0a66c2; color: #fff; padding: 1rem 1.25rem; border-radius: 12px 12px 0 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+    .detail-topbar h2 { font-size: 1.1rem; font-weight: 600; }
+    .detail-topbar .stats { font-size: .9rem; opacity: .9; margin-top: .25rem; }
+    .btn-ocultar { padding: .4rem .8rem; border-radius: 7px; border: 1px solid rgba(255,255,255,.55); background: transparent; color: #fff; cursor: pointer; font-size: .9rem; white-space: nowrap; }
+    .btn-ocultar:hover { background: rgba(255,255,255,.15); }
+
+    .detail-toolbar { background: #fff; border: 1px solid #e2e2e4; border-top: none; padding: .85rem 1.1rem; display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+    .search-box { padding: .48rem .75rem; border: 1px solid #ccc; border-radius: 8px; font-size: .9rem; min-width: 200px; }
+    .pills { display: flex; gap: .35rem; flex-wrap: wrap; }
+    .pill { padding: .38rem .75rem; border-radius: 20px; border: 1px solid #ccc; background: #fff; color: #333; cursor: pointer; font-size: .85rem; }
+    .pill:hover, .pill.on { background: #0a66c2; border-color: #0a66c2; color: #fff; }
+    .vtoggle { display: flex; }
+    .vtoggle button { padding: .38rem .7rem; border: 1px solid #ccc; background: #fff; cursor: pointer; font-size: .85rem; color: #333; }
+    .vtoggle button:first-child { border-radius: 7px 0 0 7px; }
+    .vtoggle button:last-child { border-radius: 0 7px 7px 0; border-left: none; }
+    .vtoggle button.on { background: #0a66c2; border-color: #0a66c2; color: #fff; }
+
+    .detail-dlbar { background: #fafafa; border: 1px solid #e2e2e4; border-top: none; padding: .65rem 1.1rem; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .88rem; color: #555; }
+    .detail-dlbar select { padding: .35rem .5rem; border-radius: 6px; border: 1px solid #ccc; font-size: .88rem; }
+    .pginfo { margin-left: auto; font-size: .88rem; color: #666; }
+    .pgbtns { display: flex; gap: .35rem; }
+    .pgbtns button { padding: .35rem .65rem; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; font-size: .85rem; }
+    .pgbtns button:hover { background: #f0f0f2; }
+    .pgbtns button:disabled { opacity: .4; cursor: not-allowed; }
+
+    .detail-table-wrap { overflow-x: auto; border: 1px solid #e2e2e4; border-top: none; border-radius: 0 0 12px 12px; max-height: 62vh; background: #fff; }
+    .dtable { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    .dtable th { background: #f5f5f7; font-weight: 600; color: #444; padding: .6rem .85rem; text-align: left; border-bottom: 1px solid #e2e2e4; position: sticky; top: 0; white-space: nowrap; cursor: pointer; user-select: none; }
+    .dtable th:hover { background: #ececee; }
+    .dtable td { padding: .58rem .85rem; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
+    .dtable tr:last-child td { border-bottom: none; }
+    .dtable tr:hover td { background: #fafafa; }
+    .no-rows { padding: 2rem; text-align: center; color: #888; }
+
+    .empty-msg { text-align: center; padding: 2rem; color: #888; font-style: italic; }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <h1>Contactos de LinkedIn</h1>
+  <button class="btn-theme" id="btn-theme">🌙</button>
+</header>
+
+<div class="wrap">
+
+  <!-- Auth -->
+  <div id="auth-box" style="display:none">
+    <label for="pw-input">Contraseña de acceso</label>
+    <input type="password" id="pw-input" placeholder="Introduce la contraseña">
+    <button class="btn btn-blue" id="btn-login">Entrar</button>
+    <p class="err" id="auth-err" style="display:none"></p>
+  </div>
+
+  <!-- Contenido principal -->
+  <div id="main" style="display:none">
+
+    <!-- Card scrape -->
+    <div class="scrape-card">
+      <h2>Scrapear mis contactos</h2>
+      <p>Inicia la exportación de tus contactos de LinkedIn. Se abrirá Chrome en una ventana. Si LinkedIn te ha limitado por demasiadas peticiones, espera antes de usar este botón.</p>
+      <button class="btn btn-blue" id="btn-scrape">Iniciar con mi sesión</button>
+      <p class="scrape-status" id="scrape-status"></p>
+    </div>
+
+    <!-- Lista de exportaciones -->
+    <div id="section-list">
+      <div class="list-head">
+        <div>
+          <h2>Tus exportaciones</h2>
+          <p class="list-summary" id="list-summary">Cargando…</p>
+        </div>
+        <button class="btn btn-outline" id="btn-refresh">Actualizar lista</button>
+      </div>
+      <div class="table-outer">
+        <table class="exports-table">
+          <thead>
+            <tr>
+              <th>FECHA</th>
+              <th>NOMBRE</th>
+              <th>CONTACTOS</th>
+              <th>ACCIONES</th>
+            </tr>
+          </thead>
+          <tbody id="list-tbody"></tbody>
+        </table>
+      </div>
+      <p id="list-empty" style="display:none;text-align:center;padding:2rem;color:#888;font-style:italic">Aún no hay exportaciones.</p>
+    </div>
+
+    <!-- Detalle exportación -->
+    <div id="section-detail">
+      <div class="detail-topbar">
+        <div>
+          <h2 id="detail-title">—</h2>
+          <p class="stats" id="detail-stats">—</p>
+        </div>
+        <button class="btn-ocultar" id="btn-ocultar">Ocultar</button>
+      </div>
+      <div class="detail-toolbar">
+        <input type="search" class="search-box" id="det-search" placeholder="Buscar por nombre, empresa…">
+        <div class="pills" id="pills">
+          <button class="pill on" data-f="all">Todos</button>
+          <button class="pill" data-f="email">Con email</button>
+          <button class="pill" data-f="no-email">Sin email</button>
+          <button class="pill" data-f="company">Por empresa</button>
+        </div>
+      </div>
+      <div class="detail-dlbar">
+        <span>Descargar:</span>
+        <select id="dl-scope">
+          <option value="all">Todo</option>
+          <option value="email">Solo email</option>
+          <option value="phone">Solo teléfono</option>
+          <option value="email-phone">Email y teléfono</option>
+        </select>
+        <button class="btn btn-green" id="btn-xl">Excel</button>
+        <button class="btn btn-red" id="btn-pdf">PDF</button>
+        <button class="btn btn-teal" id="btn-csv">CSV</button>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:.5rem">
+          Mostrar
+          <select id="pg-size"><option>10</option><option selected>25</option><option>50</option></select>
+          <div class="pgbtns"><button id="pg-prev">◀</button><button id="pg-next">▶</button></div>
+          <span class="pginfo" id="pg-info">—</span>
+        </span>
+      </div>
+      <!-- Tabla -->
+      <div class="detail-table-wrap" id="det-table-wrap">
+        <table class="dtable" id="det-table">
+          <thead id="det-thead"></thead>
+          <tbody id="det-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /wrap -->
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script>
+/* ── Estado global ── */
+const S = {
+  token: sessionStorage.getItem('vlk_token') || '',
+  allData:   [],   // todos los registros del archivo abierto
+  filtered:  [],   // tras filtro+búsqueda
+  fileName:  '',
+  sortCol:   '',
+  sortDir:   1,
+  filter:    'all',
+  page:      1,
+  pageSize:  25,
+};
+
+/* ── Helpers DOM ── */
+const $  = id => document.getElementById(id);
+const esc = s => { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; };
+
+function hdrs() {
+  const h = { 'Accept': 'application/json' };
+  if (S.token) h['Authorization'] = 'Bearer ' + S.token;
+  return h;
+}
+
+/* ── Auth ── */
+async function tryAuth(tok) {
+  const r = await fetch('/api/files', { headers: { 'Accept':'application/json', 'Authorization':'Bearer '+tok } });
+  return r.status !== 401;
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  const ok = await tryAuth(S.token);
+  if (ok) { showMain(); }
+  else   { $('auth-box').style.display = 'block'; }
+});
+
+$('btn-login').onclick = async () => {
+  const tok = $('pw-input').value.trim();
+  const ok  = await tryAuth(tok);
+  if (!ok) { $('auth-err').textContent='Contraseña incorrecta'; $('auth-err').style.display='block'; return; }
+  S.token = tok;
+  sessionStorage.setItem('vlk_token', tok);
+  $('auth-box').style.display = 'none';
+  showMain();
+};
+
+/* ── Inicializar pantalla principal ── */
+function showMain() {
+  $('main').style.display = 'block';
+  loadScrapeStatus();
+  loadList();
+}
+
+/* ── Tema ── */
+function applyTheme(dark) {
+  document.body.classList.toggle('dark', dark);
+  $('btn-theme').textContent = dark ? '☀️' : '🌙';
+  $('btn-theme').title = dark ? 'Modo claro' : 'Modo oscuro';
+}
+// Restaurar preferencia guardada
+applyTheme(localStorage.getItem('vlk_dark') === '1');
+
+$('btn-theme').onclick = () => {
+  const isDark = !document.body.classList.contains('dark');
+  applyTheme(isDark);
+  localStorage.setItem('vlk_dark', isDark ? '1' : '0');
+};
+
+/* ── Scrape ── */
+function loadScrapeStatus() {
+  fetch('/api/trigger-status', { headers: hdrs() })
+    .then(r=>r.json())
+    .then(d => {
+      if (d.error) return;
+      $('btn-scrape').disabled = !!d.running;
+      let msg = d.running ? 'Scrape en ejecución…' : (d.last_error||'');
+      if (d.last_error && /session|outdated|cookies have expired/i.test(d.last_error))
+        msg = 'Sesión de LinkedIn caducada. Borra session.pkl y ejecuta python main.py en tu PC.';
+      $('scrape-status').textContent = msg;
+      $('scrape-status').className = 'scrape-status' + (d.last_error ? ' err' : '');
+    }).catch(()=>{});
+}
+
+$('btn-scrape').onclick = async () => {
+  $('btn-scrape').disabled = true;
+  $('scrape-status').textContent = 'Iniciando…';
+  const r    = await fetch('/api/trigger-scrape', { method:'POST', headers: hdrs() });
+  const data = await r.json();
+  if (r.status === 409) { $('scrape-status').textContent = 'Ya hay un scrape en ejecución.'; return; }
+  if (data.error)       { $('scrape-status').textContent = data.error; $('scrape-status').classList.add('err'); $('btn-scrape').disabled=false; return; }
+  $('scrape-status').textContent = 'Scrape iniciado. Actualiza la lista en unos minutos.';
+  setInterval(loadScrapeStatus, 4000);
+};
+
+/* ── Cargar lista ── */
+$('btn-refresh').onclick = loadList;
+
+function friendlyName(fn) {
+  const m = fn.match(/^(?:perfil|conexiones|sugeridos)_(.+)_\d{8}_\d{4}\.csv$/i);
+  return m ? m[1].replace(/-/g,' ') : fn;
+}
+
+async function loadList() {
+  const r    = await fetch('/api/files', { headers: hdrs() });
+  const list = await r.json();
+  const tbody = $('list-tbody');
+  tbody.innerHTML = '';
+
+  if (!Array.isArray(list) || list.length === 0) {
+    $('list-summary').textContent = '0 exportación(es), 0 contacto(s) en total.';
+    $('list-empty').style.display = 'block';
+    return;
+  }
+  $('list-empty').style.display = 'none';
+  const total = list.reduce((s,f) => s+(f.rows||0), 0);
+  $('list-summary').textContent = `${list.length} exportación(es), ${total} contacto(s) en total.`;
+
+  list.forEach(f => {
+    const tr  = document.createElement('tr');
+    const dt  = f.mtime ? new Date(f.mtime*1000).toLocaleString('es-ES',{dateStyle:'short',timeStyle:'short'}) : '—';
+    const nm  = friendlyName(f.name);
+    const q   = S.token ? '&token='+encodeURIComponent(S.token) : '';
+
+    tr.innerHTML = `
+      <td>${esc(dt)}</td>
+      <td>${esc(nm)}</td>
+      <td>${f.rows!=null ? f.rows : '—'}</td>
+      <td class="actions">
+        <button class="btn btn-outline btn-ver">Ver esta exportación</button>
+        <div class="dd-wrap">
+          <button class="btn btn-blue btn-dd">Descargar ▾</button>
+          <div class="dd-menu">
+            <a href="/api/files/${encodeURIComponent(f.name)}?format=csv${q}" download>CSV</a>
+            <a href="/api/files/${encodeURIComponent(f.name)}?format=xlsx${q}" download>Excel</a>
+            <button class="btn-pdf-row">PDF</button>
+          </div>
+        </div>
+      </td>
+    `;
+
+    /* Botón Ver */
+    tr.querySelector('.btn-ver').addEventListener('click', () => openDetail(f.name));
+
+    /* Dropdown */
+    const ddWrap = tr.querySelector('.dd-wrap');
+    tr.querySelector('.btn-dd').addEventListener('click', e => {
+      e.stopPropagation();
+      closeAllDD();
+      ddWrap.classList.toggle('open');
+    });
+    tr.querySelector('.btn-pdf-row').addEventListener('click', () => {
+      ddWrap.classList.remove('open');
+      downloadPdfForFile(f.name);
+    });
+
+    tbody.appendChild(tr);
+  });
+}
+
+/* Cierra todos los dropdowns */
+function closeAllDD() {
+  document.querySelectorAll('.dd-wrap.open').forEach(el => el.classList.remove('open'));
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.dd-wrap')) closeAllDD();
+});
+
+/* ── Abrir detalle de un archivo ── */
+async function openDetail(fileName) {
+  /* Mostrar la sección de detalle debajo (sin ocultar nada) y hacer scroll */
+  $('detail-title').textContent = 'Cargando ' + friendlyName(fileName) + '…';
+  $('detail-stats').textContent = '';
+  $('det-thead').innerHTML = '';
+  $('det-tbody').innerHTML = '<tr><td class="no-rows">Cargando datos…</td></tr>';
+  $('section-detail').style.display = 'block';
+  $('section-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  let data;
+  try {
+    const r = await fetch('/api/files/' + encodeURIComponent(fileName) + '?format=json', { headers: hdrs() });
+    if (!r.ok) { throw new Error('HTTP ' + r.status); }
+    data = await r.json();
+  } catch (err) {
+    $('detail-title').textContent = 'Error al cargar ' + friendlyName(fileName);
+    $('detail-stats').textContent = String(err);
+    $('det-tbody').innerHTML = '<tr><td class="no-rows">No se pudo cargar el archivo. Detalle: ' + esc(String(err)) + '</td></tr>';
+    return;
+  }
+
+  if (!Array.isArray(data)) {
+    $('detail-title').textContent = 'Error al cargar el archivo';
+    $('detail-stats').textContent = data.error || 'Respuesta inesperada del servidor';
+    $('det-tbody').innerHTML = '<tr><td class="no-rows">Error: ' + esc(data.error || 'respuesta inesperada') + '</td></tr>';
+    return;
+  }
+
+  S.fileName = fileName;
+  S.allData  = data;
+  S.filter   = 'all';
+  S.sortCol  = '';
+  S.sortDir  = 1;
+  S.page     = 1;
+  S.pageSize = 25;
+  S.view     = 'table';
+
+  $('det-search').value = '';
+  $('dl-scope').value   = 'all';
+  $('pg-size').value    = '25';
+  document.querySelectorAll('#pills .pill').forEach(p => p.classList.toggle('on', p.dataset.f === 'all'));
+  $('det-table-wrap').style.display = 'block';
+
+  $('detail-title').textContent = friendlyName(fileName);
+  render();
+}
+
+/* Ocultar detalle */
+$('btn-ocultar').addEventListener('click', () => {
+  $('section-detail').style.display = 'none';
+  $('section-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
+/* ── Render tabla/tarjetas ── */
+/* ── Helpers de columnas ── */
+function getEmailCol(cols)   { return cols.find(c => /^emails?$/i.test(c)); }
+function getPhoneCol(cols)   { return cols.find(c => /^phones?|tel[eé]fono?|mobile/i.test(c)); }
+function getCompanyCol(cols) { return cols.find(c => /^compan(y|ies)$|^empresa(s)?$/i.test(c)); }
+
+/* ── Filtro de filas ── */
+function applyFilter(data) {
+  const cols   = data.length ? Object.keys(data[0]) : [];
+  const search = ($('det-search').value || '').trim().toLowerCase();
+  let out = data.slice();
+  if (search) out = out.filter(row => cols.some(c => String(row[c] ?? '').toLowerCase().includes(search)));
+  const ec = getEmailCol(cols);
+  const cc = getCompanyCol(cols);
+  if (S.filter === 'email'    && ec) out = out.filter(r => String(r[ec] ?? '').trim() !== '');
+  if (S.filter === 'no-email' && ec) out = out.filter(r => String(r[ec] ?? '').trim() === '');
+  if (S.filter === 'company'  && cc) out = out.filter(r => String(r[cc] ?? '').trim() !== '');
+  return out;
+}
+
+/* ── Render tabla ── */
+function render() {
+  const cols = S.allData.length ? Object.keys(S.allData[0]) : [];
+  S.filtered = applyFilter(S.allData);
+
+  if (S.sortCol && cols.includes(S.sortCol)) {
+    S.filtered.sort((a, b) => S.sortDir * String(a[S.sortCol] ?? '').localeCompare(String(b[S.sortCol] ?? ''), undefined, { numeric: true }));
+  }
+
+  const total = S.filtered.length;
+  const start = (S.page - 1) * S.pageSize;
+  const page  = S.filtered.slice(start, start + S.pageSize);
+
+  const ec = getEmailCol(cols), cc = getCompanyCol(cols);
+  const wEmail = ec ? S.filtered.filter(r => String(r[ec] ?? '').trim() !== '').length : 0;
+  const wComp  = cc ? new Set(S.filtered.map(r => String(r[cc] ?? '').trim()).filter(Boolean)).size : 0;
+  $('detail-stats').textContent =
+    `${total} contacto${total !== 1 ? 's' : ''}${ec ? ` · ${wEmail} con email` : ''}${cc ? ` · ${wComp} empresa${wComp !== 1 ? 's' : ''}` : ''}`;
+
+  $('pg-info').textContent  = total === 0 ? '0 de 0' : `${start + 1}-${Math.min(start + S.pageSize, total)} de ${total}`;
+  $('pg-prev').disabled     = S.page <= 1;
+  $('pg-next').disabled     = start + S.pageSize >= total;
+
+  $('det-thead').innerHTML = '<tr>' + cols.map(c => {
+    const arrow = S.sortCol === c ? (S.sortDir === 1 ? ' ↑' : ' ↓') : '';
+    return `<th data-col="${esc(c)}">${esc(c)}${arrow}</th>`;
+  }).join('') + '</tr>';
+  $('det-thead').querySelectorAll('th').forEach(th => {
+    th.onclick = () => {
+      if (S.sortCol === th.dataset.col) S.sortDir = -S.sortDir;
+      else { S.sortCol = th.dataset.col; S.sortDir = 1; }
+      render();
+    };
+  });
+
+  if (!page.length) {
+    $('det-tbody').innerHTML = `<tr><td colspan="${cols.length}" class="no-rows">No hay resultados.</td></tr>`;
+  } else {
+    $('det-tbody').innerHTML = page.map(row =>
+      '<tr>' + cols.map(c => `<td>${esc(String(row[c] ?? ''))}</td>`).join('') + '</tr>'
+    ).join('');
+  }
+}
+
+/* ── Controles detalle ── */
+$('det-search').addEventListener('input', () => { S.page = 1; render(); });
+$('pg-size').addEventListener('change', () => { S.pageSize = parseInt($('pg-size').value); S.page = 1; render(); });
+$('pg-prev').addEventListener('click', () => { if (S.page > 1) { S.page--; render(); } });
+$('pg-next').addEventListener('click', () => { const t = S.filtered.length; if ((S.page - 1) * S.pageSize + S.pageSize < t) { S.page++; render(); } });
+
+document.querySelectorAll('#pills .pill').forEach(p => {
+  p.addEventListener('click', () => {
+    S.filter = p.dataset.f; S.page = 1;
+    document.querySelectorAll('#pills .pill').forEach(x => x.classList.remove('on'));
+    p.classList.add('on');
+    render();
+  });
+});
+
+/* ── Descargas ── */
+// Devuelve los registros filtrados + solo las columnas según dl-scope
+function getDownloadRows() {
+  const scope = $('dl-scope').value;
+  const rows  = S.filtered;   // siempre respeta filtro/búsqueda activo
+  if (!rows.length) return [];
+
+  const allCols   = Object.keys(rows[0]);
+  const emailCol  = getEmailCol(allCols);
+  const phoneCol  = getPhoneCol(allCols);
+
+  let keepCols;
+  if (scope === 'email')        keepCols = [emailCol].filter(Boolean);
+  else if (scope === 'phone')   keepCols = [phoneCol].filter(Boolean);
+  else if (scope === 'email-phone') keepCols = [emailCol, phoneCol].filter(Boolean);
+  else                          keepCols = allCols;   // "all"
+
+  if (!keepCols.length) { alert('No se encontró la columna solicitada en este archivo.'); return []; }
+
+  // Proyectar solo las columnas seleccionadas y filtrar filas vacías
+  return rows
+    .map(r => Object.fromEntries(keepCols.map(c => [c, r[c] ?? ''])))
+    .filter(r => keepCols.some(c => String(r[c]).trim() !== ''));
+}
+
+function dlSuffix() {
+  const map = { all: '', email: '_solo-email', phone: '_solo-telefono', 'email-phone': '_email-telefono' };
+  return (map[$('dl-scope').value] || '') + (S.filter !== 'all' ? '_filtrado' : '');
+}
+
+function toCSVBlob(rows) {
+  if (!rows.length) return null;
+  const cols  = Object.keys(rows[0]);
+  const lines = [
+    cols.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(','),
+    ...rows.map(r => cols.map(c => '"' + String(r[c] ?? '').replace(/"/g, '""') + '"').join(','))
+  ];
+  return new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+}
+
+function dl(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$('btn-csv').addEventListener('click', () => {
+  const rows = getDownloadRows(); if (!rows.length) return;
+  dl(toCSVBlob(rows), S.fileName.replace(/\.csv$/i, '') + dlSuffix() + '.csv');
+});
+
+$('btn-xl').addEventListener('click', () => {
+  const rows = getDownloadRows(); if (!rows.length) return;
+  // xlsx real del servidor solo si descargamos todo sin filtros
+  const scope  = $('dl-scope').value;
+  const search = ($('det-search').value || '').trim();
+  if (scope === 'all' && S.filter === 'all' && !search) {
+    const q = S.token ? '&token=' + encodeURIComponent(S.token) : '';
+    const a = document.createElement('a');
+    a.href = '/api/files/' + encodeURIComponent(S.fileName) + '?format=xlsx' + q;
+    a.download = S.fileName.replace(/\.csv$/i, '') + '.xlsx';
+    a.click();
+    return;
+  }
+  dl(toCSVBlob(rows), S.fileName.replace(/\.csv$/i, '') + dlSuffix() + '.xlsx');
+});
+
+$('btn-pdf').addEventListener('click', () => {
+  const rows = getDownloadRows(); if (!rows.length) return;
+  generatePDF(rows, S.fileName.replace(/\.csv$/i, '') + dlSuffix());
+});
+
+function generatePDF(rows, fileName) {
+  if (!rows.length) { alert('Sin datos para PDF.'); return; }
+  if (!window.jspdf) { alert('Librería PDF no cargada.'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const allCols = Object.keys(rows[0]);
+
+  // Columnas que NUNCA van en PDF (URLs largas, IDs internos, fotos)
+  const SKIP_RE = /profile_link|profile_photo|profile_id|profile_url/i;
+
+  // Prioridad de columnas útiles para un PDF legible
+  const PRIORITY = ['name','first_name','last_name','emails','email','phones','phone',
+                    'company','location','position','premium','creator','is_connection',
+                    'followers','connections','open_to_work'];
+
+  // 1. Quitar URLs/IDs
+  let cols = allCols.filter(c => !SKIP_RE.test(c));
+
+  // 2. Si aún hay demasiadas columnas (>9), quedarse con las de prioridad
+  if (cols.length > 9) {
+    const prio = cols.filter(c => PRIORITY.some(p => c.toLowerCase() === p.toLowerCase()));
+    cols = prio.length >= 3 ? prio : cols.slice(0, 9);
+  }
+
+  if (!cols.length) { alert('No hay columnas válidas para PDF en este archivo.'); return; }
+
+  // 3. Truncar texto de celdas (URLs se filtran pero otras pueden ser largas)
+  const MAX_CELL = 40;
+  const trunc = v => { const s = String(v ?? ''); return s.length > MAX_CELL ? s.slice(0, MAX_CELL) + '…' : s; };
+
+  const head = [cols];
+  const body = rows.map(r => cols.map(c => trunc(r[c])));
+
+  // 4. Orientación: landscape si hay más de 5 columnas
+  const orient = cols.length > 5 ? 'landscape' : 'portrait';
+  const doc    = new jsPDF({ orientation: orient, unit: 'mm', format: 'a4' });
+  const pw     = doc.internal.pageSize.getWidth();
+  const ph     = doc.internal.pageSize.getHeight();
+
+  // 5. Título
+  const title = fileName.replace(/\.csv$/i, '').replace(/[_-]/g, ' ');
+  doc.setFontSize(12); doc.setTextColor(10, 102, 194);
+  doc.text(title, 14, 14);
+  doc.setFontSize(8); doc.setTextColor(130, 130, 130);
+  doc.text(`${rows.length} registros · ${cols.length} columnas · ${new Date().toLocaleDateString('es-ES')}  |  Para datos completos usa Excel`, 14, 20);
+
+  // 6. Tabla proporcional al ancho de página
+  const usableW  = pw - 28;                        // margen 14 a cada lado
+  const colW     = usableW / cols.length;           // reparto igual entre columnas seleccionadas
+
+  doc.autoTable({
+    startY: 25,
+    head,
+    body,
+    tableWidth: usableW,
+    margin: { left: 14, right: 14 },
+    styles: {
+      fontSize:    7.5,
+      cellPadding: { top: 2, right: 3, bottom: 2, left: 3 },
+      overflow:    'ellipsize',   // texto largo → puntos suspensivos (no rompe columna)
+      valign:      'middle',
+      lineColor:   [210, 215, 220],
+      lineWidth:   0.15,
+    },
+    headStyles: {
+      fillColor: [10, 102, 194],
+      textColor: 255,
+      fontStyle: 'bold',
+      fontSize:  7.5,
+      halign:    'left',
+    },
+    alternateRowStyles: { fillColor: [246, 248, 252] },
+    columnStyles: Object.fromEntries(cols.map((_, i) => [i, { cellWidth: colW }])),
+    didDrawPage: () => {
+      const pg  = doc.internal.getCurrentPageInfo().pageNumber;
+      const tot = doc.internal.getNumberOfPages();
+      doc.setFontSize(7); doc.setTextColor(180, 180, 180);
+      doc.text(`Página ${pg} / ${tot}`, pw / 2, ph - 6, { align: 'center' });
+    },
+  });
+
+  doc.save(fileName.replace(/\.csv$/i, '') + '.pdf');
+}
+
+async function downloadPdfForFile(fileName) {
+  const r    = await fetch('/api/files/' + encodeURIComponent(fileName) + '?format=json', { headers: hdrs() });
+  const data = await r.json();
+  if (!Array.isArray(data) || !data.length) { alert('Sin datos para PDF.'); return; }
+  generatePDF(data, fileName);
+}
+</script>
+</body>
+</html>

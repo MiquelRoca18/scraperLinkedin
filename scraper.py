@@ -3,14 +3,25 @@ import os
 import re
 import json
 import time
+import logging
+import pickle
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
+import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from staffspy import LinkedInAccount
 from staffspy.linkedin.certifications import CertificationFetcher
 from staffspy.linkedin.contact_info import ContactInfoFetcher
+from staffspy.linkedin.skills import SkillsFetcher
+from staffspy.linkedin.employee_bio import EmployeeBioFetcher
+from staffspy.linkedin.experiences import ExperiencesFetcher
+from staffspy.linkedin.schools import SchoolsFetcher
+from staffspy.linkedin.languages import LanguagesFetcher
+from staffspy.linkedin.employee import EmployeeFetcher
 from staffspy.linkedin.linkedin import LinkedInScraper
 from staffspy.utils.models import Staff
 
@@ -37,7 +48,142 @@ def _disable_staffspy_certifications() -> None:
     CertificationFetcher.fetch_certifications = _noop_fetch_certifications
 
 
+def _disable_staffspy_extra_fetchers() -> None:
+    """
+    Desactiva fetchers de StaffSpy que hacen peticiones a LinkedIn y acaban en
+    TooManyRedirects (LinkedIn redirige en bucle). Sin estos no-ops el scrape de
+    conexiones falla. Solo se usan los datos de la lista inicial de conexiones
+    (nombre, headline, enlace). Empresa, ubicación y emails pueden quedar vacíos.
+    """
+    def _noop_skills(self, staff):
+        staff.skills = []
+        return True
+    def _noop_bio(self, staff):
+        staff.bio = None
+        return True
+    def _noop_experiences(self, staff):
+        staff.experiences = []
+        return True
+    def _noop_schools(self, staff):
+        staff.schools = []
+        return True
+    def _noop_languages(self, staff):
+        staff.languages = []
+        return True
+    def _noop_contact_info(self, staff):
+        return True
+    def _noop_fetch_employee(self, base_staff, domain):
+        return True
+
+    SkillsFetcher.fetch_skills = _noop_skills
+    EmployeeBioFetcher.fetch_employee_bio = _noop_bio
+    ExperiencesFetcher.fetch_experiences = _noop_experiences
+    SchoolsFetcher.fetch_schools = _noop_schools
+    LanguagesFetcher.fetch_languages = _noop_languages
+    ContactInfoFetcher.fetch_contact_info = _noop_contact_info
+    EmployeeFetcher.fetch_employee = _noop_fetch_employee
+
+
 _disable_staffspy_certifications()
+_disable_staffspy_extra_fetchers()
+
+# Logger para parches (StaffSpy usa su propio logger)
+_log = logging.getLogger(__name__)
+
+
+def _patch_fetch_all_info_for_employee() -> None:
+    """
+    Envuelve fetch_all_info_for_employee para que TooManyRedirects y otros
+    errores de red no rompan el bucle: se registra el fallo y se sigue con
+    el siguiente contacto. Así se obtienen todas las conexiones posibles y
+    la info de contacto cuando LinkedIn no redirige en bucle.
+    """
+    _original = LinkedInScraper.fetch_all_info_for_employee
+
+    def _safe_fetch_all_info_for_employee(self, employee: Staff, index: int) -> None:
+        # Pausa entre conexiones para evitar 429 y bloqueos
+        if index == 1:
+            delay = 2.0 + random.uniform(0, 1.0)
+        else:
+            delay = SLEEP_BETWEEN_CONNECTIONS + random.uniform(0, 2.0)
+            _log.info("Esperando %.1fs antes de la conexión %s (anti-bloqueo)...", delay, index)
+        time.sleep(delay)
+
+        _log.info(
+            "Fetching data for account %s %s / %s - %s",
+            employee.id,
+            index,
+            getattr(self, "num_staff", "?"),
+            getattr(employee, "profile_link", ""),
+        )
+        task_functions = [
+            (self.employees.fetch_employee, (employee, self.domain), "employee"),
+            (self.skills.fetch_skills, (employee,), "skills"),
+            (self.experiences.fetch_experiences, (employee,), "experiences"),
+            (self.certs.fetch_certifications, (employee,), "certifications"),
+            (self.schools.fetch_schools, (employee,), "schools"),
+            (self.bio.fetch_employee_bio, (employee,), "bio"),
+            (self.languages.fetch_languages, (employee,), "languages"),
+        ]
+        with ThreadPoolExecutor(max_workers=len(task_functions)) as executor:
+            tasks = {
+                executor.submit(func, *args): name
+                for func, args, name in task_functions
+            }
+            for future in as_completed(tasks):
+                try:
+                    future.result()
+                except requests.exceptions.TooManyRedirects as e:
+                    _log.warning(
+                        "TooManyRedirects al obtener datos de %s: %s",
+                        getattr(employee, "profile_link", employee.id),
+                        e,
+                    )
+                except Exception as e:
+                    _log.warning(
+                        "Error al obtener datos de %s: %s",
+                        getattr(employee, "profile_link", employee.id),
+                        e,
+                    )
+        if getattr(employee, "is_connection", None) == "yes":
+            try:
+                self.contact.fetch_contact_info(employee)
+            except requests.exceptions.TooManyRedirects as e:
+                _log.warning(
+                    "TooManyRedirects al obtener contact info de %s: %s",
+                    getattr(employee, "profile_link", employee.id),
+                    e,
+                )
+            except Exception as e:
+                _log.warning(
+                    "Error al obtener contact info de %s: %s",
+                    getattr(employee, "profile_link", employee.id),
+                    e,
+                )
+
+    LinkedInScraper.fetch_all_info_for_employee = _safe_fetch_all_info_for_employee
+
+
+def _patch_fetch_user_profile_data_from_public_id() -> None:
+    """
+    StaffSpy devuelve '' cuando no encuentra el user_id, pero el caller hace
+    user.id, user.urn = fetch_user_profile_data_from_public_id(...), lo que
+    provoca 'not enough values to unpack (expected 2, got 0)'. Forzamos
+    que devuelva (id, urn) siempre.
+    """
+    _original = LinkedInScraper.fetch_user_profile_data_from_public_id
+
+    def _patched(self, user_id: str, key: str):
+        result = _original(self, user_id, key)
+        if result == "" or result is None:
+            return "", ""
+        return result
+
+    LinkedInScraper.fetch_user_profile_data_from_public_id = _patched
+
+
+_patch_fetch_all_info_for_employee()
+_patch_fetch_user_profile_data_from_public_id()
 
 
 def _get_env_int(name: str, default: int) -> int:
@@ -48,18 +194,141 @@ def _get_env_int(name: str, default: int) -> int:
         return default
 
 
+def _get_env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    try:
+        return float(value) if value is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
 LOG_LEVEL = _get_env_int("LOG_LEVEL", 1)
 SLEEP_TIME = _get_env_int("SLEEP_TIME", 4)
+
+# Throttling para evitar 429 (Too Many Requests) y bloqueos de cuenta
+SLEEP_BETWEEN_REQUESTS = _get_env_float("SLEEP_BETWEEN_REQUESTS", 3.0)
+SLEEP_BETWEEN_CONNECTIONS = _get_env_float("SLEEP_BETWEEN_CONNECTIONS", 6.0)
+MAX_CONTACTS_CAP = _get_env_int("MAX_CONTACTS_CAP", 50)
+
+
+def _throttle_session(session: requests.Session) -> None:
+    """
+    Envuelve get/post de la sesión para esperar antes de cada petición.
+    Reduce 429 y riesgo de bloqueo; comportamiento más humano.
+    """
+    if getattr(session, "_throttle_applied", False):
+        return
+    original_get = session.get
+    original_post = session.post
+
+    def throttled_get(*args, **kwargs):
+        delay = SLEEP_BETWEEN_REQUESTS + random.uniform(0, 1.5)
+        time.sleep(delay)
+        return original_get(*args, **kwargs)
+
+    def throttled_post(*args, **kwargs):
+        delay = SLEEP_BETWEEN_REQUESTS + random.uniform(0, 1.5)
+        time.sleep(delay)
+        return original_post(*args, **kwargs)
+
+    session.get = throttled_get
+    session.post = throttled_post
+    session._throttle_applied = True
+
+
+SESSION_FILE = "session.pkl"
+
+
+def _save_session_immediately(session: requests.Session, path: str = SESSION_FILE) -> None:
+    """
+    Guarda la sesión en disco en el mismo formato que StaffSpy.
+    Así, si más adelante el scrape da 429 o redirects, la sesión válida
+    ya está guardada y no hace falta volver a iniciar sesión.
+    """
+    try:
+        data = {"cookies": session.cookies, "headers": session.headers}
+        with open(path, "wb") as f:
+            pickle.dump(data, f)
+        _log.info("Sesión guardada en %s (por si el scrape falla después)", path)
+    except Exception as e:
+        _log.warning("No se pudo guardar la sesión en %s: %s", path, e)
 
 
 def init_client() -> LinkedInAccount:
     """Inicializa el cliente de LinkedIn usando StaffSpy."""
     print("🔐 Conectando a LinkedIn...")
-    account = LinkedInAccount(
-        session_file="session.pkl",  # guarda login, solo pide credenciales una vez
-        log_level=LOG_LEVEL,
-    )
+    try:
+        account = LinkedInAccount(
+            # session.pkl: reutiliza la sesión; NO lo borres salvo que caduque o cambies de cuenta.
+            # Menos logins = menos riesgo de bloqueos.
+            session_file=SESSION_FILE,
+            log_level=LOG_LEVEL,
+        )
+    except Exception as e:
+        msg = str(e)
+        # Caso típico de StaffSpy: sesión caducada en session.pkl. La borramos y forzamos login de nuevo.
+        if "Likely outdated session file and cookies have expired" in msg:
+            print("ℹ️  La sesión guardada en session.pkl ha caducado. Borrando el archivo para forzar login de nuevo...")
+            try:
+                if os.path.exists(SESSION_FILE):
+                    os.remove(SESSION_FILE)
+            except OSError:
+                pass
+            # Segundo intento: ahora LinkedInAccount disparará login_browser y te dejará iniciar sesión.
+            account = LinkedInAccount(
+                session_file=SESSION_FILE,
+                log_level=LOG_LEVEL,
+            )
+        else:
+            # Cualquier otro error se propaga tal cual.
+            raise
+    _throttle_session(account.session)
+    # Guardar sesión ya: si luego falla el scrape (429, redirects), la sesión sigue en disco
+    _save_session_immediately(account.session)
     return account
+
+
+def get_current_username(account: LinkedInAccount) -> Optional[str]:
+    """
+    Obtiene el publicIdentifier (username) de la cuenta que tiene la sesión iniciada.
+    Usa la API interna de LinkedIn (voyager). Si falla, devuelve None.
+    """
+    session = getattr(account, "session", None)
+    if not session or not getattr(session, "get", None):
+        return None
+    endpoints = [
+        "https://www.linkedin.com/voyager/api/me",
+        "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity",
+    ]
+    for url in endpoints:
+        try:
+            r = session.get(url, timeout=15)
+            if not r.ok:
+                continue
+            data = r.json()
+            pid = _find_public_identifier(data)
+            if pid:
+                return pid
+        except Exception:
+            continue
+    return None
+
+
+def _find_public_identifier(obj) -> Optional[str]:
+    """Busca recursivamente publicIdentifier en dict/list."""
+    if isinstance(obj, dict):
+        if "publicIdentifier" in obj and isinstance(obj["publicIdentifier"], str) and obj["publicIdentifier"]:
+            return obj["publicIdentifier"].strip().rstrip("/")
+        for v in obj.values():
+            found = _find_public_identifier(v)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_public_identifier(item)
+            if found:
+                return found
+    return None
 
 
 def _normalize_emails(data: Dict) -> str | None:
@@ -907,10 +1176,17 @@ def scrape_connections(
 ) -> pd.DataFrame:
     """Scrapea y normaliza las conexiones de tu cuenta."""
     print(f"\n👥 Scrapeando conexiones (máx. {max_contacts})...")
-    df = account.scrape_connections(
-        extra_profile_data=True,
-        max_results=max_contacts,
-    )
+    try:
+        df = account.scrape_connections(
+            extra_profile_data=True,
+            max_results=max_contacts,
+        )
+    except requests.exceptions.TooManyRedirects as e:
+        _log.warning("TooManyRedirects al obtener conexiones: %s", e)
+        # Tratarlo como 429: marcar bloqueo y activar cooldown para no seguir haciendo peticiones
+        account.on_block = True
+        print("⚠️  LinkedIn está redirigiendo en bucle (demasiadas peticiones o verificación). Se aplica el mismo cooldown que con 429.")
+        return pd.DataFrame()
     if df.empty:
         return df
 

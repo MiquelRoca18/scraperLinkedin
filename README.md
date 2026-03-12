@@ -38,6 +38,9 @@ Copia las variables de entorno en un archivo `.env` (no se sube al repo):
 - `SLEEP_TIME`: pausa entre acciones (segundos).
 - `LOG_LEVEL`: nivel de log de StaffSpy (0=errores, 1=info, 2=debug).
 - `BROWSER_PROFILE_WAIT`: segundos de espera al cargar el perfil en el navegador (modo 2).
+- `SLEEP_BETWEEN_REQUESTS` / `SLEEP_BETWEEN_CONNECTIONS`: pausas para no saturar a LinkedIn (por defecto 3 s y 6 s).
+- `COOLDOWN_HOURS_AFTER_429`: horas sin hacer peticiones tras un 429 o redirecciones (por defecto 48).
+- **`MIN_HOURS_BETWEEN_RUNS`**: mínimo de horas entre ejecuciones (por defecto 0 = desactivado). Si pones `24`, el script solo se podrá ejecutar una vez cada 24 h; útil en pruebas para no limitar la cuenta.
 
 ## Primera vez: iniciar sesión en LinkedIn
 
@@ -48,7 +51,7 @@ La **primera vez** que ejecutes el script no existirá el archivo `session.pkl`,
 3. Una vez dentro de LinkedIn, cierra el navegador o deja que el script continúe.
 4. El script **creará automáticamente** el archivo `session.pkl` en la carpeta del proyecto con la sesión guardada.
 
-A partir de la siguiente ejecución, el script usará `session.pkl` y **no volverá a pedir iniciar sesión** (salvo que borres ese archivo o caduque la sesión). No hace falta configurar nada más para el login: todo es automático la primera vez.
+A partir de la siguiente ejecución, el script usará `session.pkl` y **no volverá a pedir iniciar sesión** (salvo que caduque la sesión). **No borres `session.pkl` por costumbre**: mantenerlo evita iniciar sesión una y otra vez y reduce el riesgo de bloqueos. Solo bórralo si el script indica que la sesión ha caducado o si quieres usar otra cuenta de LinkedIn.
 
 ## Uso
 
@@ -65,3 +68,26 @@ Elige el modo (1 o 2) y pega la URL del perfil. Los CSV se guardan en `output/`:
 
 - LinkedIn puede devolver 410 en algunos endpoints; el script usa fallback con navegador cuando hace falta.
 - No subas `session.pkl` ni `.env` a ningún repositorio (ya están en `.gitignore`).
+
+### Tests (sin tocar LinkedIn)
+
+Puedes comprobar que la lógica del scraper y los controles de cooldown/intervalo funcionan como en producción, **sin hacer ninguna petición a LinkedIn**.
+
+**Usa el venv del proyecto** (ahí está instalado `staffspy`); si usas el Python del sistema, fallará `ModuleNotFoundError: No module named 'staffspy'`:
+
+```bash
+# Opción 1: con el Python del venv
+./venv/bin/python -m pytest tests/ -v
+
+# Opción 2: activar el venv y luego pytest
+source venv/bin/activate   # en Windows: venv\Scripts\activate
+pip install pytest
+pytest tests/ -v
+```
+
+Los tests simulan respuestas de StaffSpy (perfil, conexiones, 429, TooManyRedirects, sesión caducada, etc.) y comprueban normalización, orquestador y límites. Así puedes corregir errores y validar antes de ejecutar contra LinkedIn.
+
+### Frecuencia recomendada (evitar límites / bloqueos)
+
+- **En pruebas**: pon en `.env` `MIN_HOURS_BETWEEN_RUNS=24` (o `12` si quieres probar más a menudo con pocos contactos). Así el script solo se ejecutará como máximo una vez cada 24 h (o 12 h) y no tendrás que acordarte.
+- **Uso normal**: una ejecución al día o unas pocas por semana es razonable. Si has tenido 429 o redirecciones, espera 24–48 h antes de volver a ejecutar (el cooldown lo hace automático).

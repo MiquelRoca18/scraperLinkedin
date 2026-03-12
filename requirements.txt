@@ -2,3 +2,6 @@ staffspy[browser]
 pandas
 python-dotenv
 beautifulsoup4
+openpyxl
+flask
+pytest

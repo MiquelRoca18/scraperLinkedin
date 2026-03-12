@@ -3,3 +3,5 @@ venv/
 output/
 __pycache__/
 session.pkl
+.linkedin_429_cooldown
+.linkedin_last_run
