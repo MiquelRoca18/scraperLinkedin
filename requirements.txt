@@ -1,4 +1,4 @@
-staffspy[browser]
+selenium
 pandas
 python-dotenv
 beautifulsoup4

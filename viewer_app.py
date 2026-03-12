@@ -127,6 +127,7 @@ def list_runs():
 def _run_scrape_background():
     global _scrape_running, _scrape_last_error
     try:
+        os.environ["LINKEDIN_NO_BROWSER"] = "1"  # En servidor no abrir navegador si caduca sesión
         from main import run_scrape
         run_scrape(interactive=False)
         with _scrape_lock:

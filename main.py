@@ -1,20 +1,26 @@
 # main.py
 # Solo modo 1: scraping de las conexiones de la cuenta que inicia sesión.
 
+import argparse
+import logging
 import os
 import re
 import sys
 import time
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from scraper import (
     init_client,
     get_current_username,
     scrape_profile_and_connections,
 )
+from db import insert_run
+from log_config import setup_logging
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Cooldown tras 429: no hacer más peticiones hasta que pasen estas horas
 COOLDOWN_HOURS_AFTER_429 = int(os.getenv("COOLDOWN_HOURS_AFTER_429", "48"))
@@ -34,7 +40,9 @@ except (TypeError, ValueError):
     _requested = _default_max
 MAX_CONTACTS = max(1, min(_requested, _max_cap))
 if _requested != MAX_CONTACTS:
-    print(f"ℹ️  MAX_CONTACTS limitado a {MAX_CONTACTS} (solicitado: {_requested}, máximo: {_max_cap})")
+    msg = f"MAX_CONTACTS limitado a {MAX_CONTACTS} (solicitado: {_requested}, máximo: {_max_cap})"
+    logger.info(msg)
+    print(f"ℹ️  {msg}")
 
 
 def _check_cooldown() -> bool:
@@ -119,10 +127,43 @@ def get_username(account) -> str:
     return extract_username(url)
 
 
-def main():
-    print("Scraping de conexiones de tu cuenta (perfil + contactos)\n")
+def get_username_non_interactive(account) -> str:
+    """
+    Usuario en modo no interactivo (sin input): API o LINKEDIN_PROFILE_URL.
+    Lanza ValueError si no se puede obtener (para cron/viewer).
+    """
+    username = get_current_username(account)
+    if username:
+        return username
+    url = os.getenv("LINKEDIN_PROFILE_URL", "").strip()
+    if url:
+        return extract_username(url)
+    raise ValueError(
+        "En modo no interactivo hace falta LINKEDIN_PROFILE_URL en .env o que la sesión devuelva el usuario."
+    )
 
-    # No hacer ninguna petición si seguimos en cooldown por un 429 anterior
+
+def run_scrape(
+    interactive: bool = True,
+    dry_run: bool = False,
+    max_contacts_override: int | None = None,
+) -> None:
+    """
+    Ejecuta el scraping de conexiones (perfil + contactos).
+    - interactive=True: como main(), puede pedir URL por teclado si no hay usuario.
+    - interactive=False: no pide input; usa usuario de la API o LINKEDIN_PROFILE_URL (sino, lanza).
+    - dry_run=True: solo comprueba cooldown e intervalo mínimo; no conecta ni scrapea.
+    - max_contacts_override: si no es None, usa este límite en lugar de MAX_CONTACTS.
+    Registra cada ejecución en la tabla runs para el viewer.
+    """
+    setup_logging()
+    if not interactive:
+        print("Scraping de conexiones (modo no interactivo)\n")
+        logger.info("run_scrape iniciado (modo no interactivo)")
+    else:
+        print("Scraping de conexiones de tu cuenta (perfil + contactos)\n")
+        logger.info("run_scrape iniciado (modo interactivo)")
+
     if _check_cooldown():
         try:
             with open(COOLDOWN_FILE) as f:
@@ -130,12 +171,15 @@ def main():
             until_dt = datetime.fromtimestamp(until).strftime("%Y-%m-%d %H:%M")
         except (ValueError, OSError):
             until_dt = "24-48 h"
-        print("⚠️  LinkedIn devolvió 429 en una ejecución anterior.")
-        print(f"   No se hará ninguna petición hasta después de: {until_dt}")
-        print("   (Puedes cambiar COOLDOWN_HOURS_AFTER_429 en .env o borrar el archivo .linkedin_429_cooldown para ignorar.)")
-        sys.exit(0)
+        msg = (
+            f"LinkedIn devolvió 429 en una ejecución anterior. No se hará ninguna petición hasta después de: {until_dt}"
+        )
+        logger.warning("Cooldown activo: %s", until_dt)
+        print(f"⚠️  {msg}")
+        if interactive:
+            sys.exit(0)
+        raise RuntimeError(msg)
 
-    # Opcional: no ejecutar más de una vez cada X horas (para pruebas sin saturar)
     if _check_min_interval():
         try:
             with open(LAST_RUN_FILE) as f:
@@ -144,18 +188,44 @@ def main():
             next_dt = datetime.fromtimestamp(next_ok).strftime("%Y-%m-%d %H:%M")
         except (ValueError, OSError):
             next_dt = f"en {MIN_HOURS_BETWEEN_RUNS} horas"
-        print(f"⚠️  Solo se permite una ejecución cada {MIN_HOURS_BETWEEN_RUNS} h (MIN_HOURS_BETWEEN_RUNS).")
-        print(f"   Próxima ejecución permitida: {next_dt}")
-        print("   (Pon MIN_HOURS_BETWEEN_RUNS=0 en .env para desactivar este límite.)")
-        sys.exit(0)
+        msg = f"Solo se permite una ejecución cada {MIN_HOURS_BETWEEN_RUNS} h. Próxima permitida: {next_dt}"
+        logger.warning("Intervalo mínimo no cumplido: %s", next_dt)
+        print(f"⚠️  {msg}")
+        if interactive:
+            sys.exit(0)
+        raise RuntimeError(msg)
+
+    if dry_run:
+        logger.info("Dry-run: cooldown e intervalo OK, no se ejecuta el scrape")
+        print("✅ Dry-run: cooldown e intervalo OK. No se ha ejecutado el scrape.")
+        return
 
     account = init_client()
-    username = get_username(account)
+    username = get_username(account) if interactive else get_username_non_interactive(account)
+    max_contacts = max(1, max_contacts_override) if max_contacts_override is not None else MAX_CONTACTS
+    logger.info("Usuario: %s, max_contacts: %s", username, max_contacts)
 
+    started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     os.makedirs("output", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
 
-    perfil, conexiones = scrape_profile_and_connections(account, username, MAX_CONTACTS)
+    perfil, conexiones = scrape_profile_and_connections(account, username, max_contacts)
+
+    finished_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    contacts_count = len(conexiones) if not conexiones.empty else 0
+    on_block = getattr(account, "on_block", False)
+    if conexiones.empty and not on_block:
+        logger.warning(
+            "Ejecución sospechosa: 0 conexiones sin 429/redirects. Revisar sesión o cambios en LinkedIn."
+        )
+    insert_run(
+        username=username,
+        started_at=started_at,
+        finished_at=finished_at,
+        contacts_scraped=contacts_count,
+        contacts_new=0,
+        contacts_updated=0,
+    )
 
     df_perfil = pd.DataFrame([perfil])
     f_perfil = f"output/perfil_{username}_{timestamp}.csv"
@@ -171,9 +241,10 @@ def main():
             print(conexiones[cols].head(10))
     else:
         print("ℹ️  No se obtuvieron conexiones")
+        if not on_block:
+            print("   (Si esperabas conexiones, revisa la sesión o si LinkedIn ha cambiado.)")
 
-    # Si LinkedIn devolvió 429 o TooManyRedirects: guardar estado y no volver a hacer peticiones hasta el cooldown
-    if getattr(account, "on_block", False):
+    if on_block:
         _write_cooldown()
         print("")
         print("⚠️  LinkedIn ha limitado la sesión (429 o redirecciones en bucle).")
@@ -181,6 +252,40 @@ def main():
         print(f"   hasta que pasen {COOLDOWN_HOURS_AFTER_429} horas (configurable con COOLDOWN_HOURS_AFTER_429 en .env).")
         print("   Para reducir más el riesgo, usa MAX_CONTACTS más bajo o sube SLEEP_BETWEEN_CONNECTIONS.")
         print("")
+    logger.info("run_scrape finalizado: %s conexiones, on_block=%s", contacts_count, on_block)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Scraping de conexiones de LinkedIn (perfil + contactos)."
+    )
+    parser.add_argument(
+        "--max-contacts",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Límite de conexiones a scrapear (sobrescribe MAX_CONTACTS/.env).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Solo comprobar cooldown e intervalo mínimo; no conectar ni scrapear.",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="No abrir navegador si la sesión ha caducado; fallar y avisar (útil en cron).",
+    )
+    args = parser.parse_args()
+
+    if args.no_browser:
+        os.environ["LINKEDIN_NO_BROWSER"] = "1"
+    interactive = not args.no_browser
+    run_scrape(
+        interactive=interactive,
+        dry_run=args.dry_run,
+        max_contacts_override=args.max_contacts,
+    )
 
 
 if __name__ == "__main__":

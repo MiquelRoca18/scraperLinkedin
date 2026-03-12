@@ -1,378 +1,698 @@
 """
-Tests del módulo scraper: misma lógica que cuando se ejecuta contra LinkedIn.
-Sin llamadas a la red; se simulan respuestas de StaffSpy.
+Tests del módulo scraper (Selenium puro, sin StaffSpy).
+No se hacen llamadas reales a LinkedIn ni al navegador: se mockean todos los
+componentes externos (webdriver, driver, etc.).
 """
+import pickle
+import tempfile
+import os
+
 import pandas as pd
 import pytest
-import requests
+from unittest.mock import MagicMock, patch, call
 
 from scraper import (
-    _find_public_identifier,
-    normalize_profile_row,
-    scrape_single_profile,
+    LinkedInSession,
+    _load_cookies,
+    _save_cookies,
+    _driver_cookies_to_list,
+    _build_connection_dict,
+    _parse_person_from_json_ld,
+    _extract_person_from_any_script,
+    _extract_contact_info_from_overlay,
+    _extract_extra_from_dom,
+    _collect_connection_slugs,
+    _enrich_connection_from_profile,
+    _is_valid_phone,
+    _is_interactive,
+    _is_logged_in,
     scrape_connections,
+    scrape_connections_selenium,
     scrape_profile_and_connections,
 )
 from tests.conftest import COLUMNAS_CSV_CONEXIONES
 
 
-# ----- _find_public_identifier -----
+# ── LinkedInSession ────────────────────────────────────────────────────────────
+
+def test_linkedin_session_cookies(fake_cookies):
+    s = LinkedInSession(fake_cookies)
+    assert s.cookies == fake_cookies
+    assert s.on_block is False
+    assert s.username is None
 
 
-def test_find_public_identifier_directo():
-    assert _find_public_identifier({"publicIdentifier": "juan-perez"}) == "juan-perez"
+def test_linkedin_session_username(fake_cookies):
+    s = LinkedInSession(fake_cookies, username="miquel-roca")
+    assert s.username == "miquel-roca"
 
 
-def test_find_public_identifier_con_espacios():
-    assert _find_public_identifier({"publicIdentifier": "  juan-perez  "}) == "juan-perez"
+def test_linkedin_session_on_block(fake_cookies):
+    s = LinkedInSession(fake_cookies)
+    s.on_block = True
+    assert s.on_block is True
 
 
-def test_find_public_identifier_anidado():
-    assert _find_public_identifier({"data": {"profile": {"publicIdentifier": "maria-lopez"}}}) == "maria-lopez"
+# ── _load_cookies / _save_cookies ──────────────────────────────────────────────
+
+def test_save_and_load_cookies_formato_nuevo(fake_cookies):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as f:
+        path = f.name
+    try:
+        _save_cookies(fake_cookies, path)
+        loaded = _load_cookies(path)
+        assert loaded is not None
+        assert len(loaded) == len(fake_cookies)
+        assert loaded[0]["name"] == "li_at"
+    finally:
+        os.unlink(path)
 
 
-def test_find_public_identifier_en_lista():
-    assert _find_public_identifier([{"x": 1}, {"publicIdentifier": "ana-garcia"}]) == "ana-garcia"
+def test_load_cookies_archivo_no_existe():
+    assert _load_cookies("/ruta/que/no/existe.pkl") is None
 
 
-def test_find_public_identifier_no_encontrado():
-    assert _find_public_identifier({"name": "Juan"}) is None
-    assert _find_public_identifier({}) is None
-    assert _find_public_identifier([]) is None
+def test_load_cookies_archivo_corrupto():
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as f:
+        f.write(b"datos corrompidos no pickle")
+        path = f.name
+    try:
+        result = _load_cookies(path)
+        assert result is None
+    finally:
+        os.unlink(path)
 
 
-def test_find_public_identifier_vacio_o_invalido():
-    assert _find_public_identifier({"publicIdentifier": ""}) is None
-    assert _find_public_identifier({"publicIdentifier": None}) is None
-
-
-# ----- normalize_profile_row -----
-
-
-def test_normalize_profile_row_completo(staff_row_completo):
-    out = normalize_profile_row(staff_row_completo)
-    assert out["profile_id"] == "juan-garcia-123"
-    assert out["name"] == "Juan García"
-    assert out["company"] == "Tech SA"
-    assert out["location"] == "Barcelona, Spain"
-    assert out["position"] == "Software Engineer"
-    assert out["is_connection"] == "yes"
-    assert out["followers"] == 500
-    assert out["connections"] == 500
-    assert out["profile_link"] == "https://www.linkedin.com/in/juan-garcia-123"
-    assert out["premium"] is False
-    assert out["open_to_work"] is True
-    # Emails: connection_email + potential_email unificados
-    assert "juan@empresa.com" in (out["emails"] or "")
-    assert "juan.garcia@tech.com" in (out["emails"] or "")
-    # Phones
-    assert out["phones"] == "['+34600123456']"
-
-
-def test_normalize_profile_row_minimo(staff_row_minimo):
-    out = normalize_profile_row(staff_row_minimo)
-    assert out["profile_id"] == "maria-lopez"
-    assert out["name"] == "María López"
-    assert out["profile_link"] == "https://www.linkedin.com/in/maria-lopez"
-    assert out["company"] is None
-    assert out["emails"] is None
-    assert out["phones"] is None
-
-
-def test_normalize_profile_row_usa_id_si_no_profile_id():
-    row = pd.Series({"id": "ACoAAA123", "name": "X", "profile_link": "https://linkedin.com/in/x"})
-    out = normalize_profile_row(row)
-    assert out["profile_id"] == "ACoAAA123"
-
-
-def test_normalize_profile_row_emails_alternativos(staff_row_solo_emails_alternativos):
-    out = normalize_profile_row(staff_row_solo_emails_alternativos)
-    assert out["emails"] is not None
-    assert "ana@mail.com" in out["emails"]
-    assert "a.martin@empresa.com" in out["emails"]
-    assert "ana.martin@empresa.com" in out["emails"]
-
-
-def test_normalize_profile_row_company_current_company():
-    row = pd.Series({"profile_id": "x", "current_company": "Fallback SA", "profile_link": "https://x"})
-    out = normalize_profile_row(row)
-    assert out["company"] == "Fallback SA"
-
-
-def test_normalize_profile_row_phones_connection_phone_numbers():
-    row = pd.Series({
-        "profile_id": "x", "name": "X",
-        "connection_phone_numbers": "+34 600 111 222",
-        "profile_link": "https://x",
-    })
-    out = normalize_profile_row(row)
-    assert out["phones"] == "+34 600 111 222"
-
-
-def test_normalize_profile_row_tiene_exactamente_columnas_del_csv_conexiones():
-    """El dict normalizado debe tener exactamente las mismas columnas que output/conexiones_*_*.csv."""
-    row = pd.Series({
-        "profile_id": "test", "name": "Test", "profile_link": "https://linkedin.com/in/test",
-    })
-    out = normalize_profile_row(row)
-    assert list(out.keys()) == COLUMNAS_CSV_CONEXIONES
-    assert out["profile_id"] == "test"
-    assert out["name"] == "Test"
-
-
-def test_normalize_profile_row_tiene_columnas_esperadas_para_csv():
-    """El dict normalizado debe tener las columnas que main escribe al CSV."""
-    row = pd.Series({
-        "profile_id": "test", "name": "Test", "profile_link": "https://linkedin.com/in/test",
-    })
-    out = normalize_profile_row(row)
-    for c in COLUMNAS_CSV_CONEXIONES:
-        assert c in out
-    assert out["profile_id"] == "test"
-    assert out["name"] == "Test"
-
-
-def test_normalize_profile_row_datos_como_csv_real_email_nombre_telefono(staff_row_como_csv_real):
+def test_load_cookies_formato_antiguo_requests_jar(fake_cookies):
     """
-    Con una fila con la forma del CSV real (connection_email, phone_numbers, name, etc.),
-    el scraper debe sacar emails, nombre y teléfono en las columnas correctas.
+    El formato antiguo guardaba las cookies como lista de dicts (no un jar de requests).
+    Verifica que se carga igual que el formato nuevo.
     """
-    out = normalize_profile_row(staff_row_como_csv_real)
-    assert out["profile_id"] == "arturo-garcía-serna-ruiz"
-    assert out["name"] == "Arturo García-Serna Ruiz"
-    assert out["first_name"] == "Arturo"
-    assert out["last_name"] == "García-Serna Ruiz"
-    assert out["location"] == "Dublin, County Dublin, Ireland"
-    assert out["emails"] == "agarciasernaruiz@linkedin.com"
-    assert out["phones"] == "['+353(86)2148158']"
-    assert out["is_connection"] == "yes"
-    assert out["followers"] == 16210
-    assert out["connections"] == 15269
-    assert out["premium"] is True
-    assert out["creator"] is True
-    assert out["open_to_work"] is False
-    # Todas las columnas del CSV deben existir
-    assert list(out.keys()) == COLUMNAS_CSV_CONEXIONES
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as f:
+        path = f.name
+    try:
+        # Simular el "formato antiguo nuevo" — lista de dicts, igual que el actual
+        with open(path, "wb") as f:
+            pickle.dump({"cookies": fake_cookies, "headers": {}}, f)
+        loaded = _load_cookies(path)
+        assert loaded is not None
+        assert isinstance(loaded, list)
+        assert any(c["name"] == "li_at" for c in loaded)
+    finally:
+        os.unlink(path)
 
 
-def test_scrape_connections_dataframe_tiene_columnas_del_csv():
-    """El DataFrame devuelto por scrape_connections debe tener exactamente las columnas del CSV de conexiones."""
-    class FakeAccount:
-        on_block = False
-        def scrape_connections(self, extra_profile_data, max_results):
-            return pd.DataFrame([{
-                "profile_id": "c1",
-                "name": "Contacto Uno",
-                "first_name": "Contacto",
-                "last_name": "Uno",
-                "position": "Dev",
-                "company": "Acme",
-                "location": "Madrid",
-                "connection_email": "c1@acme.com",
-                "phone_numbers": "['612000000']",
-                "is_connection": "yes",
-                "followers": 100,
-                "connections": 200,
-                "profile_link": "https://linkedin.com/in/c1",
-                "profile_photo": None,
-                "premium": False,
-                "creator": False,
-                "open_to_work": False,
-            }])
+# ── _driver_cookies_to_list ────────────────────────────────────────────────────
 
-    df = scrape_connections(FakeAccount(), max_contacts=10)
-    assert len(df) == 1
+def test_driver_cookies_to_list():
+    mock_driver = MagicMock()
+    mock_driver.get_cookies.return_value = [
+        {"name": "li_at", "value": "T", "domain": ".linkedin.com", "path": "/"},
+        {"name": "foo", "value": "bar"},
+    ]
+    result = _driver_cookies_to_list(mock_driver)
+    assert len(result) == 2
+    assert result[0]["name"] == "li_at"
+    assert result[1]["domain"] == ".linkedin.com"  # default
+
+
+# ── _build_connection_dict ─────────────────────────────────────────────────────
+
+def test_build_connection_dict_completo():
+    d = _build_connection_dict("juan-garcia", "Juan García", "Dev en Acme")
+    assert d["profile_id"] == "juan-garcia"
+    assert d["name"] == "Juan García"
+    assert d["position"] == "Dev en Acme"
+    assert d["profile_link"] == "https://www.linkedin.com/in/juan-garcia/"
+    assert d["is_connection"] is True
+    assert list(d.keys()) == COLUMNAS_CSV_CONEXIONES
+
+
+def test_build_connection_dict_minimo():
+    d = _build_connection_dict("slug-test", None, None)
+    assert d["profile_id"] == "slug-test"
+    assert d["name"] is None
+    assert d["position"] is None
+    assert list(d.keys()) == COLUMNAS_CSV_CONEXIONES
+
+
+# ── _parse_person_from_json_ld ─────────────────────────────────────────────────
+
+def test_parse_person_json_ld_directo():
+    data = {
+        "@type": "Person",
+        "name": "Ana López",
+        "givenName": "Ana",
+        "familyName": "López",
+        "headline": "Engineer",
+        "worksFor": [{"name": "Empresa SA"}],
+        "address": {"addressLocality": "Madrid", "addressCountry": "Spain"},
+    }
+    result = _parse_person_from_json_ld(data)
+    assert result["name"] == "Ana López"
+    assert result["position"] == "Engineer"
+    assert result["company"] == "Empresa SA"
+    assert "Madrid" in result["location"]
+
+
+def test_parse_person_json_ld_en_graph():
+    data = {
+        "@graph": [
+            {"@type": "WebPage", "name": "LinkedIn"},
+            {"@type": "Person", "name": "Carlos Ruiz", "headline": "Dev"},
+        ]
+    }
+    result = _parse_person_from_json_ld(data)
+    assert result["name"] == "Carlos Ruiz"
+    assert result["position"] == "Dev"
+
+
+def test_parse_person_json_ld_con_foto():
+    data = {
+        "@type": "Person",
+        "name": "Luis Pérez",
+        "headline": "Dev",
+        "image": {"contentUrl": "https://media.linkedin.com/foto.jpg"},
+    }
+    result = _parse_person_from_json_ld(data)
+    assert result["profile_photo"] == "https://media.linkedin.com/foto.jpg"
+
+
+def test_parse_person_json_ld_foto_como_string():
+    data = {
+        "@type": "Person",
+        "name": "Luis Pérez",
+        "image": "https://media.linkedin.com/foto.jpg",
+    }
+    result = _parse_person_from_json_ld(data)
+    assert result["profile_photo"] == "https://media.linkedin.com/foto.jpg"
+
+
+def test_parse_person_json_ld_no_person():
+    assert _parse_person_from_json_ld({"@type": "WebPage"}) is None
+    assert _parse_person_from_json_ld({}) is None
+
+
+# ── _extract_person_from_any_script ───────────────────────────────────────────
+
+def test_extract_person_from_script_json_ld():
+    html = """
+    <html><head>
+    <script type="application/ld+json">
+    {"@type":"Person","name":"María Sanz","headline":"Designer","givenName":"María"}
+    </script>
+    </head></html>
+    """
+    result = _extract_person_from_any_script(html)
+    assert result is not None
+    assert result["name"] == "María Sanz"
+
+
+def test_extract_person_from_script_sin_datos():
+    html = "<html><body><p>Sin datos</p></body></html>"
+    assert _extract_person_from_any_script(html) is None
+
+
+# ── _is_interactive ────────────────────────────────────────────────────────────
+
+def test_is_interactive_devuelve_bool():
+    assert isinstance(_is_interactive(), bool)
+
+
+@patch("sys.stdin.isatty", return_value=True)
+def test_is_interactive_true(mock_isatty):
+    assert _is_interactive() is True
+
+
+@patch("sys.stdin.isatty", return_value=False)
+def test_is_interactive_false(mock_isatty):
+    assert _is_interactive() is False
+
+
+# ── _is_logged_in ──────────────────────────────────────────────────────────────
+
+def test_is_logged_in_cuando_esta_en_feed():
+    driver = MagicMock()
+    driver.current_url = "https://www.linkedin.com/feed/"
+    assert _is_logged_in(driver) is True
+
+
+def test_is_logged_in_redirigido_a_login():
+    driver = MagicMock()
+    driver.current_url = "https://www.linkedin.com/login?fromSignIn=true"
+    assert _is_logged_in(driver) is False
+
+
+def test_is_logged_in_authwall():
+    driver = MagicMock()
+    driver.current_url = "https://www.linkedin.com/authwall?trk=xyz"
+    assert _is_logged_in(driver) is False
+
+
+# ── scrape_connections ─────────────────────────────────────────────────────────
+
+def test_scrape_connections_devuelve_dataframe_con_columnas_correctas(fake_cookies):
+    """scrape_connections debe devolver un DataFrame con exactamente las columnas del CSV."""
+    session = LinkedInSession(fake_cookies)
+    mock_df = pd.DataFrame([_build_connection_dict("c1", "Contacto 1", "Dev")])
+
+    with patch("scraper.scrape_connections_selenium", return_value=mock_df):
+        df = scrape_connections(session, max_contacts=5)
+
+    assert not df.empty
     assert list(df.columns) == COLUMNAS_CSV_CONEXIONES
-    assert df.iloc[0]["name"] == "Contacto Uno"
-    assert df.iloc[0]["emails"] == "c1@acme.com"
-    assert "612000000" in str(df.iloc[0]["phones"])
+    assert df.iloc[0]["profile_id"] == "c1"
+    assert df.iloc[0]["name"] == "Contacto 1"
 
 
-def test_normalize_profile_row_acepta_nan_o_valores_faltantes():
-    """Filas con NaN o keys faltantes no deben romper."""
-    row = pd.Series({
-        "profile_id": "x",
-        "name": "X",
-        "company": float("nan"),
-        "profile_link": "https://x",
-    })
-    out = normalize_profile_row(row)
-    assert out["profile_id"] == "x"
-    assert out["company"] is None or (isinstance(out["company"], float) and out["company"] != out["company"])
+def test_scrape_connections_vacio_cuando_selenium_falla(fake_cookies):
+    session = LinkedInSession(fake_cookies)
+    with patch("scraper.scrape_connections_selenium", return_value=pd.DataFrame()):
+        df = scrape_connections(session, max_contacts=5)
+    assert df.empty
 
 
-# ----- scrape_single_profile (con cuenta fake) -----
+# ── scrape_connections_selenium ────────────────────────────────────────────────
+
+def test_scrape_connections_selenium_on_block_si_redirige_a_login(fake_cookies):
+    """Si el driver redirige a /login, marca on_block y devuelve vacío."""
+    session = LinkedInSession(fake_cookies)
+
+    mock_driver = MagicMock()
+    mock_driver.current_url = "https://www.linkedin.com/login"
+
+    with patch("scraper._create_driver_with_cookies", return_value=mock_driver):
+        df = scrape_connections_selenium(session, max_contacts=5)
+
+    assert df.empty
+    assert session.on_block is True
 
 
-def test_scrape_single_profile_ok():
-    class FakeAccount:
-        def scrape_users(self, user_ids):
-            return pd.DataFrame([{
-                "profile_id": "test-user",
-                "name": "Test User",
-                "company": "Test Co",
-                "profile_link": "https://www.linkedin.com/in/test-user",
-            }])
-
-    perfil = scrape_single_profile(FakeAccount(), "test-user")
-    assert perfil["profile_id"] == "test-user"
-    assert perfil["name"] == "Test User"
-    assert perfil["company"] == "Test Co"
+def test_scrape_connections_selenium_sin_driver(fake_cookies):
+    """Si no se puede crear el driver, devuelve DataFrame vacío."""
+    session = LinkedInSession(fake_cookies)
+    with patch("scraper._create_driver_with_cookies", return_value=None):
+        df = scrape_connections_selenium(session, max_contacts=5)
+    assert df.empty
 
 
-def test_scrape_single_profile_scrape_users_lanza():
-    class FakeAccount:
-        def scrape_users(self, user_ids):
-            raise ValueError("Failed to find user_id")
+def test_scrape_connections_selenium_extrae_conexiones(fake_cookies):
+    """La nueva arquitectura de dos fases recoge slugs y enriquece cada perfil."""
+    session = LinkedInSession(fake_cookies)
 
-    with pytest.raises(RuntimeError) as exc_info:
-        scrape_single_profile(FakeAccount(), "bad-user")
-    assert "bad-user" in str(exc_info.value)
-    assert "scrape_users falló" in str(exc_info.value)
+    mock_driver = MagicMock()
+    # La primera navegación es al feed (comprobación de sesión)
+    mock_driver.current_url = "https://www.linkedin.com/feed/"
+    mock_driver.find_elements.return_value = []
+    mock_driver.page_source = "<html><body></body></html>"
 
+    fake_enriched = [
+        _build_connection_dict("alice-dev", "Alice Dev", "Engineer"),
+        _build_connection_dict("bob-prod", "Bob Prod", "Manager"),
+    ]
 
-def test_scrape_single_profile_scrape_users_devuelve_vacio():
-    class FakeAccount:
-        def scrape_users(self, user_ids):
-            return pd.DataFrame()
+    with patch("scraper._create_driver_with_cookies", return_value=mock_driver):
+        with patch("scraper._is_soft_blocked", return_value=False):
+            with patch("scraper._collect_connection_slugs", return_value=["alice-dev", "bob-prod"]):
+                with patch("scraper._enrich_connection_from_profile", side_effect=fake_enriched):
+                    df = scrape_connections_selenium(session, max_contacts=10)
 
-    with pytest.raises(ValueError) as exc_info:
-        scrape_single_profile(FakeAccount(), "empty-user")
-    assert "No se pudo obtener el perfil" in str(exc_info.value)
-
-
-def test_scrape_single_profile_scrape_users_toomanyredirects():
-    class FakeAccount:
-        def scrape_users(self, user_ids):
-            raise requests.exceptions.TooManyRedirects("Exceeded 30 redirects")
-
-    with pytest.raises(RuntimeError):
-        scrape_single_profile(FakeAccount(), "redirect-user")
-
-
-# ----- scrape_connections (con cuenta fake) -----
-
-
-def test_scrape_connections_ok():
-    class FakeAccount:
-        on_block = False
-        def scrape_connections(self, extra_profile_data, max_results):
-            return pd.DataFrame([
-                {"profile_id": "c1", "name": "Conexión 1", "company": "C1", "profile_link": "https://linkedin.com/in/c1"},
-                {"profile_id": "c2", "name": "Conexión 2", "company": "C2", "profile_link": "https://linkedin.com/in/c2"},
-            ])
-
-    df = scrape_connections(FakeAccount(), max_contacts=10)
     assert len(df) == 2
-    assert list(df["profile_id"]) == ["c1", "c2"]
-    assert list(df["name"]) == ["Conexión 1", "Conexión 2"]
+    assert "alice-dev" in list(df["profile_id"])
+    assert list(df.columns) == COLUMNAS_CSV_CONEXIONES
 
 
-def test_scrape_connections_vacio():
-    class FakeAccount:
-        on_block = False
-        def scrape_connections(self, extra_profile_data, max_results):
-            return pd.DataFrame()
+# ── scrape_profile_and_connections ────────────────────────────────────────────
 
-    df = scrape_connections(FakeAccount(), max_contacts=10)
-    assert df.empty
+def test_scrape_profile_and_connections_perfil_y_conexiones_ok(fake_cookies):
+    session = LinkedInSession(fake_cookies)
+    fake_perfil = {
+        "profile_id": "me", "name": "Yo", "first_name": "Yo", "last_name": None,
+        "position": "Dev", "company": "Acme", "location": "Barcelona",
+        "emails": None, "phones": None, "is_connection": None,
+        "followers": None, "connections": None,
+        "profile_link": "https://www.linkedin.com/in/me/",
+        "profile_photo": None, "premium": None, "creator": None, "open_to_work": None,
+    }
+    fake_conexiones = pd.DataFrame([_build_connection_dict("c1", "Contacto", "Dev")])
+    mock_driver = MagicMock()
 
+    with patch("scraper._create_driver_with_cookies", return_value=mock_driver):
+        with patch("scraper._scrape_profile_via_browser", return_value=(fake_perfil, [])):
+            with patch("scraper.scrape_connections", return_value=fake_conexiones):
+                perfil, conexiones = scrape_profile_and_connections(session, "me", max_contacts=5)
 
-def test_scrape_connections_toomanyredirects_activa_on_block():
-    class FakeAccount:
-        on_block = False
-        def scrape_connections(self, extra_profile_data, max_results):
-            raise requests.exceptions.TooManyRedirects("Exceeded 30 redirects")
-
-    acc = FakeAccount()
-    df = scrape_connections(acc, max_contacts=10)
-    assert df.empty
-    assert acc.on_block is True
-
-
-def test_scrape_connections_otra_excepcion_propaga():
-    class FakeAccount:
-        on_block = False
-        def scrape_connections(self, extra_profile_data, max_results):
-            raise RuntimeError("Otro error")
-
-    with pytest.raises(RuntimeError):
-        scrape_connections(FakeAccount(), max_contacts=10)
-
-
-# ----- scrape_profile_and_connections (orquestador) -----
-
-
-def test_scrape_profile_and_connections_todo_ok():
-    class FakeAccount:
-        on_block = False
-        def scrape_users(self, user_ids):
-            return pd.DataFrame([{"profile_id": "me", "name": "Yo", "company": "Mi Co", "profile_link": "https://linkedin.com/in/me"}])
-        def scrape_connections(self, extra_profile_data, max_results):
-            return pd.DataFrame([{"profile_id": "c1", "name": "Contacto", "profile_link": "https://linkedin.com/in/c1"}])
-
-    perfil, conexiones = scrape_profile_and_connections(FakeAccount(), "me", max_contacts=5)
     assert perfil["profile_id"] == "me"
     assert perfil["name"] == "Yo"
     assert "scrape_error" not in perfil
     assert len(conexiones) == 1
-    assert conexiones.iloc[0]["name"] == "Contacto"
 
 
-def test_scrape_profile_and_connections_perfil_falla_conexiones_ok():
-    class FakeAccount:
-        on_block = False
-        def scrape_users(self, user_ids):
-            raise ValueError("Failed to find user_id")
-        def scrape_connections(self, extra_profile_data, max_results):
-            return pd.DataFrame([{"profile_id": "c1", "name": "Contacto", "profile_link": "https://linkedin.com/in/c1"}])
+def test_scrape_profile_and_connections_perfil_falla_continua_con_conexiones(fake_cookies):
+    """Si el perfil falla, devuelve perfil mínimo con scrape_error y continúa con conexiones."""
+    session = LinkedInSession(fake_cookies)
+    fake_conexiones = pd.DataFrame([_build_connection_dict("c1", "Contacto", "Dev")])
+    mock_driver = MagicMock()
 
-    perfil, conexiones = scrape_profile_and_connections(FakeAccount(), "bad-user", max_contacts=5)
+    with patch("scraper._create_driver_with_cookies", return_value=mock_driver):
+        with patch("scraper._scrape_profile_via_browser", side_effect=Exception("Error de red")):
+            with patch("scraper.scrape_connections", return_value=fake_conexiones):
+                perfil, conexiones = scrape_profile_and_connections(session, "bad-user", max_contacts=5)
+
     assert perfil["profile_id"] == "bad-user"
-    assert perfil.get("name") is None
+    assert perfil["name"] is None
     assert "scrape_error" in perfil
     assert len(conexiones) == 1
 
 
-def test_scrape_profile_and_connections_perfil_ok_conexiones_vacio():
-    class FakeAccount:
-        on_block = False
-        def scrape_users(self, user_ids):
-            return pd.DataFrame([{"profile_id": "me", "name": "Yo", "profile_link": "https://linkedin.com/in/me"}])
-        def scrape_connections(self, extra_profile_data, max_results):
-            return pd.DataFrame()
+def test_scrape_profile_and_connections_perfil_none_continua(fake_cookies):
+    """Si _scrape_profile_via_browser devuelve (None, []), se genera perfil de error."""
+    session = LinkedInSession(fake_cookies)
 
-    perfil, conexiones = scrape_profile_and_connections(FakeAccount(), "me", max_contacts=5)
+    with patch("scraper._scrape_profile_via_browser", return_value=(None, [])):
+        with patch("scraper.scrape_connections", return_value=pd.DataFrame()):
+            perfil, conexiones = scrape_profile_and_connections(session, "x", max_contacts=5)
+
+    assert perfil["profile_id"] == "x"
+    assert "scrape_error" in perfil
+    assert conexiones.empty
+
+
+def test_scrape_profile_and_connections_perfil_ok_conexiones_vacias(fake_cookies):
+    session = LinkedInSession(fake_cookies)
+    fake_perfil = {
+        "profile_id": "me", "name": "Yo", "first_name": None, "last_name": None,
+        "position": None, "company": None, "location": None, "emails": None,
+        "phones": None, "is_connection": None, "followers": None, "connections": None,
+        "profile_link": "https://www.linkedin.com/in/me/", "profile_photo": None,
+        "premium": None, "creator": None, "open_to_work": None,
+    }
+
+    with patch("scraper._scrape_profile_via_browser", return_value=(fake_perfil, [])):
+        with patch("scraper.scrape_connections", return_value=pd.DataFrame()):
+            perfil, conexiones = scrape_profile_and_connections(session, "me", max_contacts=5)
+
     assert perfil["profile_id"] == "me"
     assert conexiones.empty
 
 
-def test_scrape_profile_and_connections_perfil_falla_conexiones_vacio():
-    class FakeAccount:
-        on_block = False
-        def scrape_users(self, user_ids):
-            raise RuntimeError("scrape_users falló")
-        def scrape_connections(self, extra_profile_data, max_results):
-            return pd.DataFrame()
+# ── _collect_connection_slugs ─────────────────────────────────────────────────
 
-    perfil, conexiones = scrape_profile_and_connections(FakeAccount(), "x", max_contacts=5)
-    assert perfil["profile_id"] == "x"
-    assert "scrape_error" in perfil
-    assert conexiones.empty
+def test_collect_connection_slugs_extrae_slugs_de_hrefs():
+    """Recoge slugs únicos de los enlaces /in/ visibles en la página."""
+    mock_driver = MagicMock()
+
+    def fake_find_elements(by, selector):
+        if "/in/" in selector:
+            a1 = MagicMock()
+            a1.get_attribute.return_value = "https://www.linkedin.com/in/alice-dev/"
+            a2 = MagicMock()
+            a2.get_attribute.return_value = "https://www.linkedin.com/in/bob-prod/"
+            return [a1, a2]
+        return []
+
+    mock_driver.find_elements.side_effect = fake_find_elements
+    mock_driver.execute_script.return_value = None
+
+    with patch("scraper.time.sleep"):
+        slugs = _collect_connection_slugs(mock_driver, max_contacts=10)
+
+    assert "alice-dev" in slugs
+    assert "bob-prod" in slugs
+    assert len(slugs) == len(set(slugs))  # sin duplicados
 
 
-def test_scrape_profile_and_connections_perfil_falla_conexiones_toomanyredirects():
-    """Si el perfil falla y las conexiones lanzan TooManyRedirects, se devuelve perfil con error y conexiones vacías; account.on_block=True."""
-    class FakeAccount:
-        on_block = False
-        def scrape_users(self, user_ids):
-            raise ValueError("Failed to find user_id")
-        def scrape_connections(self, extra_profile_data, max_results):
-            raise requests.exceptions.TooManyRedirects("Exceeded 30 redirects")
+def test_collect_connection_slugs_respeta_max_contacts():
+    """No devuelve más slugs que max_contacts."""
+    mock_driver = MagicMock()
 
-    acc = FakeAccount()
-    perfil, conexiones = scrape_profile_and_connections(acc, "x", max_contacts=5)
-    assert perfil["profile_id"] == "x"
-    assert "scrape_error" in perfil
-    assert conexiones.empty
-    assert acc.on_block is True
+    def fake_find_elements(by, selector):
+        if "/in/" in selector:
+            links = []
+            for i in range(20):
+                a = MagicMock()
+                a.get_attribute.return_value = f"https://www.linkedin.com/in/user-{i}/"
+                links.append(a)
+            return links
+        return []
+
+    mock_driver.find_elements.side_effect = fake_find_elements
+    mock_driver.execute_script.return_value = None
+
+    with patch("scraper.time.sleep"):
+        slugs = _collect_connection_slugs(mock_driver, max_contacts=5)
+
+    assert len(slugs) <= 5
+
+
+# ── _extract_contact_info_from_overlay ────────────────────────────────────────
+
+def test_extract_contact_info_email_via_mailto():
+    """Extrae email de un enlace mailto: en el overlay."""
+    mock_driver = MagicMock()
+
+    mailto_el = MagicMock()
+    mailto_el.get_attribute.return_value = "mailto:test@example.com"
+
+    def fake_find_elements(by, selector):
+        if "mailto" in selector:
+            return [mailto_el]
+        return []
+
+    mock_driver.find_elements.side_effect = fake_find_elements
+    mock_driver.page_source = "<html><body></body></html>"
+
+    with patch("scraper.WebDriverWait"):
+        with patch("scraper.time.sleep"):
+            result = _extract_contact_info_from_overlay(mock_driver, "test-user")
+
+    assert result["emails"] == "test@example.com"
+    assert result["phones"] is None
+
+
+def test_extract_contact_info_sin_datos():
+    """Si no hay mailto ni sección de teléfono, devuelve None en ambos campos."""
+    mock_driver = MagicMock()
+    mock_driver.find_elements.return_value = []
+    mock_driver.page_source = "<html><body><p>Sin contacto</p></body></html>"
+
+    with patch("scraper.WebDriverWait"):
+        with patch("scraper.time.sleep"):
+            result = _extract_contact_info_from_overlay(mock_driver, "no-contact")
+
+    assert result["emails"] is None
+    assert result["phones"] is None
+
+
+def test_extract_contact_info_multiples_emails():
+    """Si hay varios emails, los separa con '; '."""
+    mock_driver = MagicMock()
+
+    def make_mailto(addr):
+        el = MagicMock()
+        el.get_attribute.return_value = f"mailto:{addr}"
+        return el
+
+    def fake_find_elements(by, selector):
+        if "mailto" in selector:
+            return [make_mailto("a@example.com"), make_mailto("b@example.com")]
+        return []
+
+    mock_driver.find_elements.side_effect = fake_find_elements
+    mock_driver.page_source = "<html></html>"
+
+    with patch("scraper.WebDriverWait"):
+        with patch("scraper.time.sleep"):
+            result = _extract_contact_info_from_overlay(mock_driver, "multi-email")
+
+    assert "a@example.com" in result["emails"]
+    assert "b@example.com" in result["emails"]
+    assert "; " in result["emails"]
+
+
+# ── _is_valid_phone ───────────────────────────────────────────────────────────
+
+def test_is_valid_phone_numero_espanol():
+    assert _is_valid_phone("653329820") is True
+    assert _is_valid_phone("+34 600 123 456") is True
+    assert _is_valid_phone("+1 (555) 123-4567") is True
+
+
+def test_is_valid_phone_rechaza_falsos():
+    assert _is_valid_phone("1.13.42781") is False   # versión con punto
+    assert _is_valid_phone("Móvil") is False          # solo texto
+    assert _is_valid_phone("(Trabajo)") is False      # etiqueta con letras
+    assert _is_valid_phone("83") is False             # demasiado corto
+    assert _is_valid_phone("") is False
+
+
+def test_extract_contact_info_telefono_via_xpath():
+    """
+    El overlay de LinkedIn tiene la estructura real:
+      <h3>\\n  Teléfono\\n</h3>
+      <ul><li>
+        <span class='t-14 t-black t-normal'>653329820</span>
+        <span class='t-14 t-black--light t-normal'>(Trabajo)</span>
+      </li></ul>
+    Verifica que se extrae 653329820 y no '(Trabajo)'.
+    """
+    mock_driver = MagicMock()
+
+    # Simular find_elements para mailto (sin emails)
+    mock_driver.find_elements.return_value = []
+
+    # Simular XPath: find h3 con 'Teléfono'
+    h3_mock = MagicMock()
+
+    # El span con el número y el span con la etiqueta
+    span_numero = MagicMock()
+    span_numero.text = "653329820"
+    span_etiqueta = MagicMock()
+    span_etiqueta.text = "(Trabajo)"
+
+    ul_mock = MagicMock()
+    ul_mock.find_elements.return_value = [span_numero, span_etiqueta]
+    h3_mock.find_element.return_value = ul_mock
+
+    def fake_find_elements(by, selector):
+        from selenium.webdriver.common.by import By
+        if by == By.XPATH and "Teléfono" in selector:
+            return [h3_mock]
+        if "mailto" in selector:
+            return []
+        return []
+
+    mock_driver.find_elements.side_effect = fake_find_elements
+    mock_driver.page_source = "<html><body></body></html>"
+
+    with patch("scraper.WebDriverWait"):
+        with patch("scraper.time.sleep"):
+            result = _extract_contact_info_from_overlay(mock_driver, "test-phone")
+
+    assert result["phones"] == "653329820"
+
+
+def test_extract_contact_info_no_captura_numeros_falsos():
+    """No captura versiones, IDs ni timestamps como teléfonos (sin sección Teléfono)."""
+    mock_driver = MagicMock()
+    mock_driver.find_elements.return_value = []
+    mock_driver.page_source = """
+    <html><body>
+      <p>Versión 1.13.42781 · timestamp 83-9096727 · 925546278</p>
+    </body></html>
+    """
+
+    with patch("scraper.WebDriverWait"):
+        with patch("scraper.time.sleep"):
+            result = _extract_contact_info_from_overlay(mock_driver, "no-phone")
+
+    assert result["phones"] is None
+
+
+# ── _extract_extra_from_dom ───────────────────────────────────────────────────
+
+def test_extract_extra_from_dom_open_to_work():
+    """Detecta la etiqueta Open to Work en el DOM."""
+    mock_driver = MagicMock()
+
+    otw_el = MagicMock()
+    otw_el.text = "Open to work"
+
+    def fake_find_elements(by, selector):
+        if "open-to-work" in selector or "aria-label" in selector:
+            return [otw_el]
+        return []
+
+    mock_driver.find_elements.side_effect = fake_find_elements
+    body_mock = MagicMock()
+    body_mock.text = "500 followers\n30 connections"
+    mock_driver.find_element.return_value = body_mock
+
+    result = _extract_extra_from_dom(mock_driver)
+
+    assert result["open_to_work"] is True
+    assert result["followers"] == "500"
+    assert result["connections"] == "30"
+
+
+def test_extract_extra_from_dom_sin_datos():
+    """Si no hay datos extra, devuelve None en todos los campos."""
+    mock_driver = MagicMock()
+    mock_driver.find_elements.return_value = []
+    body_mock = MagicMock()
+    body_mock.text = "Texto sin datos relevantes"
+    mock_driver.find_element.return_value = body_mock
+
+    result = _extract_extra_from_dom(mock_driver)
+
+    assert result["premium"] is None
+    assert result["creator"] is None
+    assert result["open_to_work"] is None
+    assert result["followers"] is None
+    assert result["connections"] is None
+
+
+# ── _enrich_connection_from_profile ──────────────────────────────────────────
+
+def test_enrich_connection_from_profile_datos_completos():
+    """Integra JSON-LD + DOM extra + overlay de contacto en un dict completo."""
+    mock_driver = MagicMock()
+    mock_driver.page_source = """
+    <html><head>
+    <script type="application/ld+json">
+    {"@type":"Person","name":"Ana López","givenName":"Ana","familyName":"López",
+     "headline":"Engineer","worksFor":[{"name":"Acme"}],
+     "address":{"addressLocality":"Madrid"},"image":"https://cdn.photo.jpg"}
+    </script>
+    </head></html>
+    """
+
+    fake_extra = {
+        "profile_photo": None, "followers": "1.2K", "connections": "500+",
+        "premium": True, "creator": None, "open_to_work": None,
+    }
+    fake_contact = {"emails": "ana@acme.com", "phones": "+34 600 000 001"}
+
+    with patch("scraper.WebDriverWait"):
+        with patch("scraper.time.sleep"):
+            with patch("scraper._extract_extra_from_dom", return_value=fake_extra):
+                with patch("scraper._extract_contact_info_from_overlay", return_value=fake_contact):
+                    result = _enrich_connection_from_profile(mock_driver, "ana-lopez")
+
+    assert result["profile_id"] == "ana-lopez"
+    assert result["name"] == "Ana López"
+    assert result["first_name"] == "Ana"
+    assert result["last_name"] == "López"
+    assert result["position"] == "Engineer"
+    assert result["company"] == "Acme"
+    assert result["location"] == "Madrid"
+    assert result["profile_photo"] == "https://cdn.photo.jpg"
+    assert result["emails"] == "ana@acme.com"
+    assert result["phones"] == "+34 600 000 001"
+    assert result["followers"] == "1.2K"
+    assert result["connections"] == "500+"
+    assert result["premium"] is True
+    assert result["is_connection"] is True
+    assert list(result.keys()) == COLUMNAS_CSV_CONEXIONES
+
+
+def test_enrich_connection_from_profile_sin_json_ld():
+    """Si no hay JSON-LD, el perfil tiene solo el slug y profile_link."""
+    mock_driver = MagicMock()
+    mock_driver.page_source = "<html><body><p>Sin datos</p></body></html>"
+
+    with patch("scraper.WebDriverWait"):
+        with patch("scraper.time.sleep"):
+            with patch("scraper._extract_extra_from_dom", return_value={
+                "profile_photo": None, "followers": None, "connections": None,
+                "premium": None, "creator": None, "open_to_work": None,
+            }):
+                with patch("scraper._extract_contact_info_from_overlay",
+                           return_value={"emails": None, "phones": None}):
+                    with patch("scraper._extract_person_from_dom", return_value=None):
+                        result = _enrich_connection_from_profile(mock_driver, "sin-datos")
+
+    assert result["profile_id"] == "sin-datos"
+    assert result["name"] is None
+    assert result["profile_link"] == "https://www.linkedin.com/in/sin-datos/"
+    assert list(result.keys()) == COLUMNAS_CSV_CONEXIONES

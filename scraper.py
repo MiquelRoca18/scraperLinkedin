@@ -1,547 +1,442 @@
 # scraper.py
-import os
-import re
+# Scraping de LinkedIn usando Selenium puro (sin StaffSpy).
+# El login se gestiona con cookies persistidas en session.pkl.
+
 import json
-import time
 import logging
+import os
 import pickle
 import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Optional, Tuple
+import re
+import sys
+import time
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from staffspy import LinkedInAccount
-from staffspy.linkedin.certifications import CertificationFetcher
-from staffspy.linkedin.contact_info import ContactInfoFetcher
-from staffspy.linkedin.skills import SkillsFetcher
-from staffspy.linkedin.employee_bio import EmployeeBioFetcher
-from staffspy.linkedin.experiences import ExperiencesFetcher
-from staffspy.linkedin.schools import SchoolsFetcher
-from staffspy.linkedin.languages import LanguagesFetcher
-from staffspy.linkedin.employee import EmployeeFetcher
-from staffspy.linkedin.linkedin import LinkedInScraper
-from staffspy.utils.models import Staff
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 load_dotenv()
 
-# Tiempo de espera al cargar el perfil en el navegador (segundos)
-BROWSER_PROFILE_WAIT = int(os.getenv("BROWSER_PROFILE_WAIT", "10"))
-
-
-def _disable_staffspy_certifications() -> None:
-    """Desactiva el scraping de certificaciones para evitar errores internos.
-
-    StaffSpy está rompiendo actualmente al intentar parsear certificaciones
-    (cambios en LinkedIn). Como a ti ahora mismo no te interesan las
-    certificaciones, las anulamos para poder mantener extra_profile_data=True
-    y seguir obteniendo, cuando exista, info rica de perfil/contacto.
-    """
-
-    def _noop_fetch_certifications(self, staff):
-        # No hacemos nada, pero devolvemos True para que el flujo continúe
-        staff.certifications = []
-        return True
-
-    CertificationFetcher.fetch_certifications = _noop_fetch_certifications
-
-
-def _disable_staffspy_extra_fetchers() -> None:
-    """
-    Desactiva fetchers de StaffSpy que hacen peticiones a LinkedIn y acaban en
-    TooManyRedirects (LinkedIn redirige en bucle). Sin estos no-ops el scrape de
-    conexiones falla. Solo se usan los datos de la lista inicial de conexiones
-    (nombre, headline, enlace). Empresa, ubicación y emails pueden quedar vacíos.
-    """
-    def _noop_skills(self, staff):
-        staff.skills = []
-        return True
-    def _noop_bio(self, staff):
-        staff.bio = None
-        return True
-    def _noop_experiences(self, staff):
-        staff.experiences = []
-        return True
-    def _noop_schools(self, staff):
-        staff.schools = []
-        return True
-    def _noop_languages(self, staff):
-        staff.languages = []
-        return True
-    def _noop_contact_info(self, staff):
-        return True
-    def _noop_fetch_employee(self, base_staff, domain):
-        return True
-
-    SkillsFetcher.fetch_skills = _noop_skills
-    EmployeeBioFetcher.fetch_employee_bio = _noop_bio
-    ExperiencesFetcher.fetch_experiences = _noop_experiences
-    SchoolsFetcher.fetch_schools = _noop_schools
-    LanguagesFetcher.fetch_languages = _noop_languages
-    ContactInfoFetcher.fetch_contact_info = _noop_contact_info
-    EmployeeFetcher.fetch_employee = _noop_fetch_employee
-
-
-_disable_staffspy_certifications()
-_disable_staffspy_extra_fetchers()
-
-# Logger para parches (StaffSpy usa su propio logger)
 _log = logging.getLogger(__name__)
 
 
-def _patch_fetch_all_info_for_employee() -> None:
-    """
-    Envuelve fetch_all_info_for_employee para que TooManyRedirects y otros
-    errores de red no rompan el bucle: se registra el fallo y se sigue con
-    el siguiente contacto. Así se obtienen todas las conexiones posibles y
-    la info de contacto cuando LinkedIn no redirige en bucle.
-    """
-    _original = LinkedInScraper.fetch_all_info_for_employee
-
-    def _safe_fetch_all_info_for_employee(self, employee: Staff, index: int) -> None:
-        # Pausa entre conexiones para evitar 429 y bloqueos
-        if index == 1:
-            delay = 2.0 + random.uniform(0, 1.0)
-        else:
-            delay = SLEEP_BETWEEN_CONNECTIONS + random.uniform(0, 2.0)
-            _log.info("Esperando %.1fs antes de la conexión %s (anti-bloqueo)...", delay, index)
-        time.sleep(delay)
-
-        _log.info(
-            "Fetching data for account %s %s / %s - %s",
-            employee.id,
-            index,
-            getattr(self, "num_staff", "?"),
-            getattr(employee, "profile_link", ""),
-        )
-        task_functions = [
-            (self.employees.fetch_employee, (employee, self.domain), "employee"),
-            (self.skills.fetch_skills, (employee,), "skills"),
-            (self.experiences.fetch_experiences, (employee,), "experiences"),
-            (self.certs.fetch_certifications, (employee,), "certifications"),
-            (self.schools.fetch_schools, (employee,), "schools"),
-            (self.bio.fetch_employee_bio, (employee,), "bio"),
-            (self.languages.fetch_languages, (employee,), "languages"),
-        ]
-        with ThreadPoolExecutor(max_workers=len(task_functions)) as executor:
-            tasks = {
-                executor.submit(func, *args): name
-                for func, args, name in task_functions
-            }
-            for future in as_completed(tasks):
-                try:
-                    future.result()
-                except requests.exceptions.TooManyRedirects as e:
-                    _log.warning(
-                        "TooManyRedirects al obtener datos de %s: %s",
-                        getattr(employee, "profile_link", employee.id),
-                        e,
-                    )
-                except Exception as e:
-                    _log.warning(
-                        "Error al obtener datos de %s: %s",
-                        getattr(employee, "profile_link", employee.id),
-                        e,
-                    )
-        if getattr(employee, "is_connection", None) == "yes":
-            try:
-                self.contact.fetch_contact_info(employee)
-            except requests.exceptions.TooManyRedirects as e:
-                _log.warning(
-                    "TooManyRedirects al obtener contact info de %s: %s",
-                    getattr(employee, "profile_link", employee.id),
-                    e,
-                )
-            except Exception as e:
-                _log.warning(
-                    "Error al obtener contact info de %s: %s",
-                    getattr(employee, "profile_link", employee.id),
-                    e,
-                )
-
-    LinkedInScraper.fetch_all_info_for_employee = _safe_fetch_all_info_for_employee
-
-
-def _patch_fetch_user_profile_data_from_public_id() -> None:
-    """
-    StaffSpy devuelve '' cuando no encuentra el user_id, pero el caller hace
-    user.id, user.urn = fetch_user_profile_data_from_public_id(...), lo que
-    provoca 'not enough values to unpack (expected 2, got 0)'. Forzamos
-    que devuelva (id, urn) siempre.
-    """
-    _original = LinkedInScraper.fetch_user_profile_data_from_public_id
-
-    def _patched(self, user_id: str, key: str):
-        result = _original(self, user_id, key)
-        if result == "" or result is None:
-            return "", ""
-        return result
-
-    LinkedInScraper.fetch_user_profile_data_from_public_id = _patched
-
-
-_patch_fetch_all_info_for_employee()
-_patch_fetch_user_profile_data_from_public_id()
-
+# ── Configuración ──────────────────────────────────────────────────────────────
 
 def _get_env_int(name: str, default: int) -> int:
-    value = os.getenv(name)
     try:
-        return int(value) if value is not None else default
-    except ValueError:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
         return default
 
 
 def _get_env_float(name: str, default: float) -> float:
-    value = os.getenv(name)
     try:
-        return float(value) if value is not None else default
-    except (ValueError, TypeError):
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
         return default
 
 
-LOG_LEVEL = _get_env_int("LOG_LEVEL", 1)
-SLEEP_TIME = _get_env_int("SLEEP_TIME", 4)
-
-# Throttling para evitar 429 (Too Many Requests) y bloqueos de cuenta
-SLEEP_BETWEEN_REQUESTS = _get_env_float("SLEEP_BETWEEN_REQUESTS", 3.0)
+BROWSER_PROFILE_WAIT      = _get_env_int("BROWSER_PROFILE_WAIT", 10)
 SLEEP_BETWEEN_CONNECTIONS = _get_env_float("SLEEP_BETWEEN_CONNECTIONS", 6.0)
-MAX_CONTACTS_CAP = _get_env_int("MAX_CONTACTS_CAP", 50)
+MAX_CONTACTS_CAP          = _get_env_int("MAX_CONTACTS_CAP", 50)
+SESSION_FILE              = "session.pkl"
+# Muestra el navegador si HEADLESS=false en .env (útil para depuración)
+HEADLESS                  = os.getenv("HEADLESS", "true").lower() != "false"
+
+# LinkedIn redirige invite-manager/ a catch-up/ — usamos la URL real
+_CONNECTIONS_URL        = "https://www.linkedin.com/mynetwork/catch-up/connections/"
+_CONNECTIONS_SEARCH_URL = "https://www.linkedin.com/search/results/people/?network=%5B%22F%22%5D&origin=MEMBER_PROFILE_CANNED_SEARCH"
 
 
-def _throttle_session(session: requests.Session) -> None:
+# ── Sesión ─────────────────────────────────────────────────────────────────────
+
+class LinkedInSession:
+    """Contenedor ligero de la sesión de LinkedIn (cookies + estado)."""
+
+    def __init__(self, cookies: List[Dict], username: Optional[str] = None):
+        # cookies: lista de dicts {name, value, domain, path}
+        self._cookies: List[Dict] = cookies
+        self.on_block: bool = False
+        # Username detectado durante init_client (slug de LinkedIn, ej. "miquel-roca-mascaros")
+        self.username: Optional[str] = username
+
+    @property
+    def cookies(self) -> List[Dict]:
+        return self._cookies
+
+
+def _load_cookies(path: str = SESSION_FILE) -> Optional[List[Dict]]:
     """
-    Envuelve get/post de la sesión para esperar antes de cada petición.
-    Reduce 429 y riesgo de bloqueo; comportamiento más humano.
+    Carga cookies desde session.pkl.
+    Soporta el formato antiguo (requests.cookies.RequestsCookieJar)
+    y el nuevo (lista de dicts).
     """
-    if getattr(session, "_throttle_applied", False):
-        return
-    original_get = session.get
-    original_post = session.post
-
-    def throttled_get(*args, **kwargs):
-        delay = SLEEP_BETWEEN_REQUESTS + random.uniform(0, 1.5)
-        time.sleep(delay)
-        return original_get(*args, **kwargs)
-
-    def throttled_post(*args, **kwargs):
-        delay = SLEEP_BETWEEN_REQUESTS + random.uniform(0, 1.5)
-        time.sleep(delay)
-        return original_post(*args, **kwargs)
-
-    session.get = throttled_get
-    session.post = throttled_post
-    session._throttle_applied = True
-
-
-SESSION_FILE = "session.pkl"
-
-
-def _save_session_immediately(session: requests.Session, path: str = SESSION_FILE) -> None:
-    """
-    Guarda la sesión en disco en el mismo formato que StaffSpy.
-    Así, si más adelante el scrape da 429 o redirects, la sesión válida
-    ya está guardada y no hace falta volver a iniciar sesión.
-    """
+    if not os.path.exists(path):
+        return None
     try:
-        data = {"cookies": session.cookies, "headers": session.headers}
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        cookies = data.get("cookies", [])
+        # Formato antiguo: RequestsCookieJar (iterable de objetos con .name, .value…)
+        if not isinstance(cookies, list):
+            converted = []
+            for c in cookies:
+                converted.append({
+                    "name": c.name,
+                    "value": c.value,
+                    "domain": c.domain or ".linkedin.com",
+                    "path": c.path or "/",
+                })
+            return converted
+        return cookies
+    except Exception as e:
+        _log.warning("No se pudo cargar %s: %s", path, e)
+        return None
+
+
+def _save_cookies(cookies: List[Dict], path: str = SESSION_FILE) -> None:
+    """Guarda la lista de cookies en session.pkl."""
+    try:
         with open(path, "wb") as f:
-            pickle.dump(data, f)
-        _log.info("Sesión guardada en %s (por si el scrape falla después)", path)
+            pickle.dump({"cookies": cookies}, f)
+        _log.info("Cookies guardadas en %s", path)
     except Exception as e:
-        _log.warning("No se pudo guardar la sesión en %s: %s", path, e)
+        _log.warning("No se pudo guardar cookies en %s: %s", path, e)
 
 
-def init_client() -> LinkedInAccount:
-    """Inicializa el cliente de LinkedIn usando StaffSpy."""
-    print("🔐 Conectando a LinkedIn...")
-    try:
-        account = LinkedInAccount(
-            # session.pkl: reutiliza la sesión; NO lo borres salvo que caduque o cambies de cuenta.
-            # Menos logins = menos riesgo de bloqueos.
-            session_file=SESSION_FILE,
-            log_level=LOG_LEVEL,
-        )
-    except Exception as e:
-        msg = str(e)
-        # Caso típico de StaffSpy: sesión caducada en session.pkl. La borramos y forzamos login de nuevo.
-        if "Likely outdated session file and cookies have expired" in msg:
-            print("ℹ️  La sesión guardada en session.pkl ha caducado. Borrando el archivo para forzar login de nuevo...")
-            try:
-                if os.path.exists(SESSION_FILE):
-                    os.remove(SESSION_FILE)
-            except OSError:
-                pass
-            # Segundo intento: ahora LinkedInAccount disparará login_browser y te dejará iniciar sesión.
-            account = LinkedInAccount(
-                session_file=SESSION_FILE,
-                log_level=LOG_LEVEL,
-            )
-        else:
-            # Cualquier otro error se propaga tal cual.
-            raise
-    _throttle_session(account.session)
-    # Guardar sesión ya: si luego falla el scrape (429, redirects), la sesión sigue en disco
-    _save_session_immediately(account.session)
-    return account
-
-
-def get_current_username(account: LinkedInAccount) -> Optional[str]:
-    """
-    Obtiene el publicIdentifier (username) de la cuenta que tiene la sesión iniciada.
-    Usa la API interna de LinkedIn (voyager). Si falla, devuelve None.
-    """
-    session = getattr(account, "session", None)
-    if not session or not getattr(session, "get", None):
-        return None
-    endpoints = [
-        "https://www.linkedin.com/voyager/api/me",
-        "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity",
+def _driver_cookies_to_list(driver) -> List[Dict]:
+    """Extrae todas las cookies del driver como lista de dicts."""
+    return [
+        {
+            "name": c.get("name", ""),
+            "value": c.get("value", ""),
+            "domain": c.get("domain", ".linkedin.com"),
+            "path": c.get("path", "/"),
+        }
+        for c in driver.get_cookies()
     ]
-    for url in endpoints:
-        try:
-            r = session.get(url, timeout=15)
-            if not r.ok:
-                continue
-            data = r.json()
-            pid = _find_public_identifier(data)
-            if pid:
-                return pid
-        except Exception:
-            continue
-    return None
 
 
-def _find_public_identifier(obj) -> Optional[str]:
-    """Busca recursivamente publicIdentifier en dict/list."""
-    if isinstance(obj, dict):
-        if "publicIdentifier" in obj and isinstance(obj["publicIdentifier"], str) and obj["publicIdentifier"]:
-            return obj["publicIdentifier"].strip().rstrip("/")
-        for v in obj.values():
-            found = _find_public_identifier(v)
-            if found:
-                return found
-    elif isinstance(obj, list):
-        for item in obj:
-            found = _find_public_identifier(item)
-            if found:
-                return found
-    return None
+# ── WebDriver ──────────────────────────────────────────────────────────────────
 
+# User-Agent de un Chrome reciente en macOS (actualizar si la versión queda obsoleta)
+_CHROME_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/133.0.0.0 Safari/537.36"
+)
 
-def _normalize_emails(data: Dict) -> str | None:
-    """Unifica emails reales + potenciales en un solo campo de texto."""
-    emails: list[str] = []
+# Script que se inyecta en cada nueva página para ocultar que es un navegador automatizado.
+# Cubre las comprobaciones más habituales de LinkedIn y otras webs anti-bot.
+_STEALTH_SCRIPT = """
+    // Ocultar navigator.webdriver (señal primaria de Selenium/WebDriver)
+    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 
-    # Email directo de la conexión (cuando lo tiene público)
-    email_direct = data.get("connection_email") or data.get("email_address")
-    if email_direct:
-        emails.append(str(email_direct).strip())
+    // Simular plugins de un navegador real (headless los tiene vacíos)
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+            {name: 'Chrome PDF Plugin'},
+            {name: 'Chrome PDF Viewer'},
+            {name: 'Native Client'}
+        ]
+    });
 
-    # Emails potenciales generados por StaffSpy
-    for key in ("potential_email", "potential_emails"):
-        raw = data.get(key)
-        if not raw:
-            continue
-        parts = [p.strip() for p in str(raw).split(",") if p.strip()]
-        emails.extend(parts)
+    // Idiomas típicos de un usuario de habla hispana en macOS
+    Object.defineProperty(navigator, 'languages', {
+        get: () => ['es-ES', 'es', 'en-US', 'en']
+    });
 
-    emails = sorted(set(emails))
-    return ", ".join(emails) if emails else None
-
-
-def _normalize_phones(data: Dict) -> str | None:
-    """Convierte la info de teléfonos a un string legible."""
-    phones = data.get("connection_phone_numbers") or data.get("phone_numbers")
-    if not phones:
-        return None
-    return str(phones)
-
-
-def _normalize_company(data: Dict) -> str | None:
-    """Intenta obtener la empresa actual."""
-    return data.get("company") or data.get("current_company")
-
-
-def _normalize_location(data: Dict) -> str | None:
-    """Devuelve la localización tal cual la da StaffSpy."""
-    return data.get("location")
-
-
-def normalize_profile_row(row: pd.Series) -> Dict:
-    """Normaliza una fila de StaffSpy a un diccionario sencillo."""
-    data = row.to_dict()
-    normalized = {
-        "profile_id": data.get("profile_id") or data.get("id"),
-        "name": data.get("name"),
-        "first_name": data.get("first_name"),
-        "last_name": data.get("last_name"),
-        "position": data.get("position"),
-        "company": _normalize_company(data),
-        "location": _normalize_location(data),
-        "emails": _normalize_emails(data),
-        "phones": _normalize_phones(data),
-        "is_connection": data.get("is_connection"),
-        "followers": data.get("followers"),
-        "connections": data.get("connections"),
-        "profile_link": data.get("profile_link"),
-        "profile_photo": data.get("profile_photo"),
-        "premium": data.get("premium"),
-        "creator": data.get("creator"),
-        "open_to_work": data.get("open_to_work"),
+    // window.chrome existe en Chrome real pero no en headless por defecto
+    if (!window.chrome) {
+        window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
     }
-    return normalized
+
+    // Ocultar el flag "HeadlessChrome" del user-agent que Chrome inyecta internamente
+    const origUA = navigator.userAgent;
+    Object.defineProperty(navigator, 'userAgent', {
+        get: () => origUA.replace('HeadlessChrome', 'Chrome')
+    });
+"""
 
 
-PROFILE_VIEW_EP = "https://www.linkedin.com/voyager/api/identity/profiles/{user_id}/profileView"
+def _make_chrome_options(headless: bool = True) -> ChromeOptions:
+    opts = ChromeOptions()
+    if headless:
+        opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument(f"--user-agent={_CHROME_UA}")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+    return opts
 
 
-def _fetch_and_merge_contact_info(
-    account: LinkedInAccount,
-    internal_id: str,
-    urn: str,
-    public_id: str,
-    url: str,
-    result: Dict,
-) -> None:
-    """Pide email/teléfono al endpoint de contact info y los escribe en result (solo si es tu conexión)."""
-    contact_ep = "https://www.linkedin.com/voyager/api/graphql?queryId=voyagerIdentityDashProfiles.13618f886ce95bf503079f49245fbd6f&queryName=ProfilesByMemberIdentity&variables=(memberIdentity:{employee_id},count:1)"
-    ep = contact_ep.format(employee_id=internal_id)
-    try:
-        res = account.session.get(ep)
-        print(f"   [LOG] Contact info API: status={res.status_code} internal_id={internal_id[:20]}...")
-        if res.status_code != 200:
-            print(f"   [LOG] Contact info response (primeros 300 chars): {res.text[:300]}")
-        else:
-            try:
-                data = res.json()
-                elements = (data.get("data") or {}).get("identityDashProfilesByMemberIdentity", {}).get("elements") or []
-                print(f"   [LOG] Contact info elements count: {len(elements)}")
-                if elements:
-                    first = elements[0]
-                    print(f"   [LOG] Keys en element: {list(first.keys())[:15]}")
-                    if first.get("emailAddress"):
-                        result["emails"] = first.get("emailAddress", {}).get("emailAddress")
-                        print(f"   [LOG] Email extraído: {result['emails']}")
-                    ph = first.get("phoneNumbers") or []
-                    if ph:
-                        result["phones"] = ", ".join(p.get("phoneNumber", {}).get("number", "") for p in ph if isinstance(p, dict))
-                        print(f"   [LOG] Teléfonos extraídos: {result['phones']}")
-                    # Ubicación (prioritaria) y nombre/apellido desde el mismo endpoint
-                    if first.get("address") and not result.get("location"):
-                        addr = first["address"]
-                        if isinstance(addr, str):
-                            result["location"] = addr.strip() or None
-                        elif isinstance(addr, dict):
-                            parts = [
-                                addr.get("city") or addr.get("cityName"),
-                                addr.get("region"),
-                                addr.get("country") or addr.get("countryName"),
-                                addr.get("line1"),
-                                addr.get("formatted") or addr.get("formattedAddress"),
-                            ]
-                            result["location"] = ", ".join(filter(None, (str(p).strip() for p in parts))) or None
-                        if result.get("location"):
-                            print(f"   [LOG] Ubicación extraída: {result['location']}")
-                    if first.get("firstName") and not result.get("first_name"):
-                        result["first_name"] = first.get("firstName", "").strip() or None
-                    if first.get("lastName") and not result.get("last_name"):
-                        result["last_name"] = first.get("lastName", "").strip() or None
-                    if (result.get("first_name") or result.get("last_name")) and not result.get("name"):
-                        result["name"] = " ".join(filter(None, [result.get("first_name"), result.get("last_name")]))
-                else:
-                    print(f"   [LOG] Response data (recorte): {str(data)[:400]}")
-            except Exception as e:
-                print(f"   [LOG] Error parseando contact info JSON: {e}")
-        # Intentar también con StaffSpy por si el formato cambió
-        staff = Staff(
-            id=internal_id,
-            urn=urn,
-            search_term="url",
-            profile_id=public_id,
-            profile_link=url,
-        )
-        ContactInfoFetcher(account.session).fetch_contact_info(staff)
-        if staff.contact_info:
-            if getattr(staff.contact_info, "email_address", None):
-                result["emails"] = staff.contact_info.email_address
-            if getattr(staff.contact_info, "phone_numbers", None) and staff.contact_info.phone_numbers:
-                result["phones"] = ", ".join(staff.contact_info.phone_numbers)
-            if not result.get("location") and getattr(staff.contact_info, "address", None):
-                addr = staff.contact_info.address
-                result["location"] = addr if isinstance(addr, str) else (addr.get("formatted") or addr.get("line1") or str(addr))
-        if result.get("emails") or result.get("phones"):
-            result["is_connection"] = True
-    except Exception as e:
-        print(f"   [LOG] Excepción en _fetch_and_merge_contact_info: {e}")
-
-
-def _extract_internal_id_from_html(html: str, public_id: Optional[str] = None) -> Optional[str]:
-    """Extrae el id interno del perfil visitado (ACoA...), no el del usuario logueado.
-
-    Si se pasa public_id (ej. kirian-pla-bonete-9a75031b1), se busca el ACoA solo en el
-    contexto donde aparece ese perfil (p. ej. junto a publicIdentifier), para no devolver
-    el ID del viewer.
+def _apply_stealth(driver) -> None:
     """
-    if not html:
-        return None
-    acoa_pat = re.compile(r'(ACoA[A-Za-z0-9_-]{22,})')
+    Inyecta el script anti-detección en cada nueva página que cargue el driver.
+    Debe llamarse justo después de crear el driver y antes de la primera navegación.
+    """
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": _STEALTH_SCRIPT
+        })
+    except Exception as e:
+        _log.warning("No se pudo aplicar el script stealth (CDP): %s", e)
 
-    if public_id:
-        # Buscar bloques que contengan el public_id del perfil visitado y extraer ACoA ahí
-        # Así evitamos el ACoA del usuario logueado (suele ser el primero en la página)
-        public_escaped = re.escape(public_id)
-        # "publicIdentifier":"kirian-pla-bonete-9a75031b1" o similar
-        for m in re.finditer(rf'publicIdentifier["\']?\s*:\s*["\']?{public_escaped}', html):
-            start = max(0, m.start() - 500)
-            end = min(len(html), m.end() + 3000)
-            chunk = html[start:end]
-            aco = acoa_pat.search(chunk)
-            if aco:
-                return aco.group(1)
-        # Por si el objeto tiene primero profileId y luego publicIdentifier: buscar ventana tras el slug
-        for m in re.finditer(public_escaped, html):
-            start = m.start()
-            end = min(len(html), m.end() + 2500)
-            chunk = html[start:end]
-            aco = acoa_pat.search(chunk)
-            if aco:
-                return aco.group(1)
-        return None
 
-    # Sin public_id: comportamiento legacy (puede devolver el ID del viewer)
-    patterns = [
-        r'urn:li:fsd_profile:(ACoA[A-Za-z0-9_-]{20,})',
-        r'"profileId"\s*:\s*"(ACoA[A-Za-z0-9_-]{20,})"',
-        r'entityUrn["\']?\s*:\s*["\']?urn:li:fsd_profile:(ACoA[A-Za-z0-9_-]+)',
-        r'memberIdentity["\']?\s*:\s*["\']?(ACoA[A-Za-z0-9_-]{20,})',
-    ]
-    for pat in patterns:
-        m = re.search(pat, html)
+def _detect_username_from_driver(driver) -> Optional[str]:
+    """
+    Intenta extraer el username (slug) del usuario logueado usando el driver activo.
+    Navega a /in/me (LinkedIn redirige al perfil real) y extrae el slug de la URL.
+    También intenta extraerlo del HTML del feed como fallback.
+    """
+    try:
+        driver.get("https://www.linkedin.com/in/me")
+        time.sleep(random.uniform(2.5, 4.0))
+        url = driver.current_url
+        m = re.search(r"linkedin\.com/in/([^/?#]+)", url)
         if m:
-            return m.group(1)
+            slug = m.group(1).rstrip("/").lower()
+            if slug and slug not in ("me", "login", "feed") and len(slug) > 2:
+                _log.info("Username detectado via /in/me: %s", slug)
+                return slug
+    except Exception as e:
+        _log.debug("_detect_username_from_driver (/in/me) falló: %s", e)
+
+    # Fallback: buscar el enlace al propio perfil en el HTML actual
+    try:
+        driver.get("https://www.linkedin.com/feed/")
+        time.sleep(random.uniform(2.0, 3.0))
+        html = driver.page_source
+        # LinkedIn inyecta el perfil del usuario en el HTML del feed
+        for pat in [
+            r'"publicIdentifier"\s*:\s*"([a-z0-9][a-z0-9\-]{2,})"',
+            r'linkedin\.com/in/([a-z0-9][a-z0-9\-]{2,})(?:/|")',
+        ]:
+            m = re.search(pat, html)
+            if m:
+                slug = m.group(1).rstrip("/").lower()
+                if slug and len(slug) > 2:
+                    _log.info("Username detectado via HTML del feed: %s", slug)
+                    return slug
+    except Exception as e:
+        _log.debug("_detect_username_from_driver (feed fallback) falló: %s", e)
+
     return None
 
 
-def _extract_internal_id_from_profile_html(session, profile_url: str, public_id: Optional[str] = None) -> Optional[str]:
-    """Extrae el id interno del perfil visitado (ACoA...) desde el HTML de la página de LinkedIn."""
-    try:
-        resp = session.get(profile_url)
-        if not resp.ok:
-            return None
-        html = resp.text
-    except Exception:
-        return None
-    if not public_id:
-        m = re.search(r"linkedin\.com/in/([^/?]+)", profile_url)
-        public_id = m.group(1).rstrip("/") if m else None
-    return _extract_internal_id_from_html(html, public_id)
+def _is_logged_in(driver) -> bool:
+    """Comprueba si el driver actual está autenticado en LinkedIn."""
+    url = driver.current_url
+    return not any(kw in url for kw in ("authwall", "/login", "checkpoint", "uas/login", "signup"))
 
+
+def _is_soft_blocked(driver) -> bool:
+    """
+    Detecta bloqueos suaves que NO cambian la URL:
+    páginas de error, captcha, verificación de seguridad, rate-limit.
+    Devuelve True si se detecta alguno.
+    """
+    try:
+        title = (driver.title or "").lower()
+        if any(kw in title for kw in ("security verification", "captcha", "verification")):
+            return True
+        body_els = driver.find_elements(By.CSS_SELECTOR, "body")
+        if not body_els:
+            return False
+        text = body_els[0].text.lower()
+        soft_block_phrases = [
+            "something went wrong",
+            "algo salió mal",
+            "too many redirects",
+            "this page is unavailable",
+            "we couldn't load this page",
+            "please verify you are a human",
+            "security check",
+            "unusual activity",
+        ]
+        return any(phrase in text for phrase in soft_block_phrases)
+    except Exception:
+        return False
+
+
+def _inject_cookies(driver, cookies: List[Dict]) -> None:
+    """
+    Inyecta cookies en el driver.
+    Requiere estar ya en linkedin.com antes de llamar a esta función.
+    """
+    for c in cookies:
+        domain = c.get("domain") or ".linkedin.com"
+        if not domain.startswith(".") and "linkedin" in domain:
+            domain = "." + domain
+        try:
+            driver.add_cookie({
+                "name": c["name"],
+                "value": c["value"],
+                "domain": domain,
+                "path": c.get("path", "/"),
+            })
+        except Exception:
+            pass
+
+
+# ── Login / init_client ────────────────────────────────────────────────────────
+
+def _is_interactive() -> bool:
+    """True si el proceso tiene terminal (puede mostrar un navegador al usuario)."""
+    return sys.stdin.isatty()
+
+
+def init_client() -> LinkedInSession:
+    """
+    Inicializa la sesión de LinkedIn usando Selenium puro.
+
+    Flujo:
+    1. Carga cookies de session.pkl (si existen).
+    2. Abre Chrome headless, inyecta cookies y comprueba si sigue logueado.
+    3. Si la sesión ha caducado (o no hay cookies):
+       a. En modo interactivo: abre Chrome visible para que el usuario haga login.
+       b. En modo no interactivo (cron / --no-browser): lanza RuntimeError.
+    4. Guarda las cookies nuevas en session.pkl y devuelve la sesión.
+    """
+    print("🔐 Conectando a LinkedIn...")
+    no_browser = os.environ.get("LINKEDIN_NO_BROWSER", "").strip() in ("1", "true", "yes")
+    cookies = _load_cookies()
+
+    # Paso 1: comprobar si las cookies guardadas siguen siendo válidas
+    if cookies:
+        driver = None
+        try:
+            driver = webdriver.Chrome(options=_make_chrome_options(headless=True))
+            _apply_stealth(driver)
+            driver.get("https://www.linkedin.com")
+            time.sleep(random.uniform(1.5, 2.5))
+            _inject_cookies(driver, cookies)
+            driver.refresh()
+            time.sleep(random.uniform(2.0, 3.0))
+            driver.get("https://www.linkedin.com/feed/")
+            time.sleep(random.uniform(2.0, 3.0))
+            if _is_logged_in(driver):
+                # Aprovechar el driver activo para detectar el username (sin abrir otro Chrome)
+                username = _detect_username_from_driver(driver)
+                if username:
+                    _log.info("Username detectado durante init_client: %s", username)
+                fresh_cookies = _driver_cookies_to_list(driver)
+                _save_cookies(fresh_cookies)
+                _log.info("Sesión válida cargada desde %s", SESSION_FILE)
+                print(f"✅ Sesión activa{f' ({username})' if username else ''}.")
+                return LinkedInSession(fresh_cookies, username=username)
+            else:
+                _log.info("Cookies caducadas o sesión inválida, necesario re-login")
+                print("ℹ️  La sesión guardada ha caducado. Necesitas volver a iniciar sesión.")
+        except Exception as e:
+            _log.warning("Error comprobando sesión existente: %s", e)
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+    else:
+        print("ℹ️  No hay sesión guardada. Necesitas iniciar sesión en LinkedIn.")
+
+    # Paso 2: login manual (modo interactivo)
+    if not _is_interactive() or no_browser:
+        if no_browser:
+            _log.warning("Sesión inválida y LINKEDIN_NO_BROWSER=1: no se abre navegador.")
+        msg = (
+            "⚠️  No hay sesión válida y no se puede abrir el navegador "
+            "(modo no interactivo o --no-browser).\n"
+            "   Ejecuta el script manualmente para volver a iniciar sesión."
+        )
+        print(msg)
+        raise RuntimeError(msg)
+
+    print("   Abriendo Chrome para que inicies sesión en LinkedIn...")
+    print("   (Completa el login, incluida cualquier verificación en dos pasos o captcha.)")
+    driver = None
+    try:
+        driver = webdriver.Chrome(options=_make_chrome_options(headless=False))
+        _apply_stealth(driver)
+        driver.get("https://www.linkedin.com/login")
+        input("\n   Pulsa Enter cuando hayas iniciado sesión y estés en LinkedIn (Feed o perfil)...\n")
+        if not _is_logged_in(driver):
+            print("⚠️  No parece que hayas completado el login. Vuelve a ejecutar el script.")
+            raise RuntimeError("Login no completado")
+        # Detectar username y recoger cookies mientras el driver está activo
+        username = _detect_username_from_driver(driver)
+        if username:
+            _log.info("Username detectado tras login: %s", username)
+        fresh_cookies = _driver_cookies_to_list(driver)
+        _save_cookies(fresh_cookies)
+        _log.info("Login completado, cookies guardadas en %s", SESSION_FILE)
+        print(f"✅ Login completado y sesión guardada{f' ({username})' if username else ''}.")
+        return LinkedInSession(fresh_cookies, username=username)
+    except RuntimeError:
+        raise
+    except Exception as e:
+        print(
+            "\n⚠️  El login no se completó. Si LinkedIn mostró captcha o verificación, "
+            "complétala antes de pulsar Enter. Vuelve a ejecutar el script si hace falta."
+        )
+        raise RuntimeError(f"Error durante el login: {e}") from e
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
+# ── Username ───────────────────────────────────────────────────────────────────
+
+def get_current_username(session: LinkedInSession) -> Optional[str]:
+    """
+    Devuelve el username detectado durante init_client si ya está en la sesión.
+    Si no, abre un driver headless como fallback para intentar extraerlo.
+    """
+    # Camino rápido: username ya detectado durante init_client (sin abrir otro Chrome)
+    if session.username:
+        _log.info("Username disponible desde la sesión: %s", session.username)
+        return session.username
+
+    # Fallback: abrir un driver headless con las cookies e intentar detectarlo
+    driver = None
+    try:
+        driver = webdriver.Chrome(options=_make_chrome_options(headless=True))
+        _apply_stealth(driver)
+        driver.get("https://www.linkedin.com")
+        time.sleep(random.uniform(1.0, 2.0))
+        _inject_cookies(driver, session.cookies)
+        driver.refresh()
+        time.sleep(random.uniform(1.5, 2.5))
+        username = _detect_username_from_driver(driver)
+        if username:
+            session.username = username  # cachear para futuros accesos
+        return username
+    except Exception as e:
+        _log.warning("get_current_username (fallback driver) falló: %s", e)
+        return None
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
+# ── Utilidades de parseo ───────────────────────────────────────────────────────
 
 def _find_in_dict(obj, *keys: str) -> Optional[str]:
-    """Busca la primera clave que exista en un dict anidado (una sola profundidad por clave)."""
+    """Busca la primera clave (de una lista) que exista en un dict con valor string."""
     if not isinstance(obj, dict):
         return None
     for key in keys:
@@ -553,7 +448,7 @@ def _find_in_dict(obj, *keys: str) -> Optional[str]:
 
 
 def _deep_find_value(obj, target_key: str) -> Optional[str]:
-    """Recorre recursivamente dict/list y devuelve el primer valor para target_key."""
+    """Recorre recursivamente dict/list y devuelve el primer valor string para target_key."""
     if isinstance(obj, dict):
         if target_key in obj:
             v = obj[target_key]
@@ -571,120 +466,8 @@ def _deep_find_value(obj, target_key: str) -> Optional[str]:
     return None
 
 
-def _resolve_public_id_to_internal(
-    session, public_id: str, profile_view_data: Optional[dict] = None
-) -> Optional[Tuple[str, str]]:
-    """Devuelve (id_interno, urn) desde el JSON de profileView, o None si no hay."""
-    if profile_view_data is None:
-        try:
-            resp = session.get(PROFILE_VIEW_EP.format(user_id=public_id))
-            resp.raise_for_status()
-            profile_view_data = resp.json()
-        except Exception:
-            return None
-    data = profile_view_data
-
-    profile_id = None
-    urn = None
-
-    # Rutas fijas (StaffSpy)
-    profile_id = (data.get("positionView") or {}).get("profileId")
-    mini = (data.get("profile") or {}).get("miniProfile") or {}
-    raw_urn = mini.get("objectUrn") or mini.get("entityUrn")
-    if isinstance(raw_urn, str) and raw_urn:
-        parts = raw_urn.split(":")
-        urn = parts[-1] if parts else None
-        if not profile_id and ("fsd_profile" in raw_urn or "member" in raw_urn):
-            profile_id = urn
-
-    # Si LinkedIn cambió la estructura, buscar en todo el JSON
-    if not profile_id:
-        profile_id = _deep_find_value(data, "profileId") or _deep_find_value(data, "entityUrn")
-        if profile_id and ":" in profile_id:
-            profile_id = profile_id.split(":")[-1]
-    if not urn and profile_id:
-        urn = profile_id
-    if not urn:
-        urn = _deep_find_value(data, "objectUrn")
-        if urn and ":" in urn:
-            urn = urn.split(":")[-1]
-
-    # Respuesta en formato "included" (ej. GraphQL/JSON:API)
-    if not profile_id and isinstance(data.get("included"), list):
-        for item in data["included"]:
-            if not isinstance(item, dict):
-                continue
-            pid = item.get("profileId") or item.get("entityUrn") or item.get("id")
-            if pid and isinstance(pid, str):
-                if ":" in pid:
-                    pid = pid.split(":")[-1]
-                if len(pid) >= 15:
-                    profile_id = pid
-                    if not urn:
-                        urn = pid
-                    break
-
-    if profile_id and urn:
-        return (str(profile_id), str(urn))
-    return None
-
-
-def _extract_internal_id_from_profile_view(data: dict) -> Optional[str]:
-    """Extrae el id interno (ACoA...) del JSON de profileView si la resolución estándar falló."""
-    if not data:
-        return None
-    # Buscar en todo el JSON un valor que parezca ID interno de miembro
-    found = _deep_find_value(data, "profileId") or _deep_find_value(data, "entityUrn")
-    if found and isinstance(found, str):
-        if ":" in found:
-            found = found.split(":")[-1]
-        if found.startswith("ACoA") and len(found) >= 20:
-            return found
-    # Búsqueda por patrón en el JSON serializado (último recurso)
-    try:
-        raw = json.dumps(data)
-        match = re.search(r'"ACoA[A-Za-z0-9_-]{20,}"', raw)
-        if match:
-            return match.group(0).strip('"')
-    except Exception:
-        pass
-    return None
-
-
-def _extract_from_profile_view_json(data: dict) -> Dict:
-    """Extrae nombre, headline, etc. del JSON de profileView aunque no tengamos id/urn."""
-    out = {
-        "name": None,
-        "first_name": None,
-        "last_name": None,
-        "position": None,
-        "company": None,
-        "location": None,
-    }
-    profile = data.get("profile") or {}
-    if isinstance(profile, dict):
-        out["position"] = _find_in_dict(profile, "headline")
-        if not out["position"] and isinstance(profile.get("headlineV2"), dict):
-            t = (profile["headlineV2"].get("text") or {})
-            if isinstance(t, dict):
-                out["position"] = t.get("text")
-        out["first_name"] = _find_in_dict(profile, "firstName", "firstId")
-        out["last_name"] = _find_in_dict(profile, "lastName", "lastId")
-        if out["first_name"] or out["last_name"]:
-            out["name"] = " ".join(filter(None, [out["first_name"], out["last_name"]]))
-    mini = profile.get("miniProfile") or {}
-    if isinstance(mini, dict) and not out["name"]:
-        out["name"] = _find_in_dict(mini, "firstName", "lastName")
-    loc = _deep_find_value(data, "geoLocationName") or _deep_find_value(data, "locationName")
-    if loc:
-        out["location"] = loc
-    return out
-
-
 def _parse_person_from_json_ld(parsed: dict) -> Optional[Dict]:
-    """Extrae datos de Person desde JSON-LD (formato ScrapFly / LinkedIn público).
-    https://scrapfly.io/blog/posts/how-to-scrape-linkedin
-    """
+    """Extrae campos de Person desde un bloque JSON-LD de LinkedIn."""
     person = None
     if isinstance(parsed, dict) and "@graph" in parsed:
         for item in parsed.get("@graph", []):
@@ -695,6 +478,7 @@ def _parse_person_from_json_ld(parsed: dict) -> Optional[Dict]:
         person = parsed
     if not person:
         return None
+
     addr = person.get("address") or {}
     if isinstance(addr, dict):
         loc_parts = [
@@ -705,12 +489,22 @@ def _parse_person_from_json_ld(parsed: dict) -> Optional[Dict]:
         location = ", ".join(filter(None, loc_parts)) or None
     else:
         location = None
+
     works_for = person.get("worksFor")
     company = None
     if isinstance(works_for, list) and works_for:
         company = works_for[0].get("name") if isinstance(works_for[0], dict) else None
     elif isinstance(works_for, dict):
         company = works_for.get("name")
+
+    # Foto de perfil (LinkedIn la incluye en JSON-LD como campo "image")
+    image = person.get("image")
+    profile_photo = None
+    if isinstance(image, dict):
+        profile_photo = image.get("contentUrl") or image.get("url")
+    elif isinstance(image, str):
+        profile_photo = image
+
     return {
         "name": person.get("name"),
         "first_name": person.get("givenName"),
@@ -718,12 +512,12 @@ def _parse_person_from_json_ld(parsed: dict) -> Optional[Dict]:
         "position": person.get("headline"),
         "company": company,
         "location": location,
+        "profile_photo": profile_photo,
     }
 
 
 def _extract_person_from_any_script(html: str) -> Optional[Dict]:
-    """Busca en el HTML cualquier script que contenga JSON con datos de Person (JSON-LD u otro)."""
-    # 1) Scripts con type="application/ld+json"
+    """Busca en el HTML scripts JSON-LD con datos de Person."""
     soup = BeautifulSoup(html, "html.parser")
     for script in soup.find_all("script", type="application/ld+json"):
         if script.string:
@@ -733,67 +527,49 @@ def _extract_person_from_any_script(html: str) -> Optional[Dict]:
                     return row
             except (json.JSONDecodeError, TypeError):
                 pass
-    # 2) Buscar en todo el HTML bloques que parezcan JSON con Person/headline/givenName
     for match in re.finditer(r'<script[^>]*>(.*?)</script>', html, re.DOTALL):
         content = match.group(1).strip()
         if "Person" not in content and "headline" not in content and "givenName" not in content:
             continue
         try:
             parsed = json.loads(content)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    if isinstance(item, dict):
-                        row = _parse_person_from_json_ld(item)
-                        if row and (row.get("name") or row.get("position") or row.get("company")):
-                            return row
-            else:
-                row = _parse_person_from_json_ld(parsed)
-                if row and (row.get("name") or row.get("position") or row.get("company")):
-                    return row
-        except (json.JSONDecodeError, TypeError, NameError):
+            items = parsed if isinstance(parsed, list) else [parsed]
+            for item in items:
+                if isinstance(item, dict):
+                    row = _parse_person_from_json_ld(item)
+                    if row and (row.get("name") or row.get("position") or row.get("company")):
+                        return row
+        except (json.JSONDecodeError, TypeError):
             pass
     return None
 
 
 def _extract_person_from_dom(driver) -> Optional[Dict]:
-    """Extrae nombre, headline, ubicación y empresa desde el DOM (selectores típicos de LinkedIn)."""
+    """Extrae nombre, headline, ubicación y empresa desde el DOM de LinkedIn."""
     try:
-        from selenium.webdriver.common.by import By
-        out = {"name": None, "first_name": None, "last_name": None, "position": None, "company": None, "location": None}
+        out = {
+            "name": None, "first_name": None, "last_name": None,
+            "position": None, "company": None, "location": None,
+        }
         name_el = driver.find_elements(By.CSS_SELECTOR, "h1.text-heading-xlarge, h1.inline.t-24")
         if name_el:
             out["name"] = name_el[0].text.strip() or None
         headline_el = driver.find_elements(By.CSS_SELECTOR, "div.text-body-medium.break-words, div.inline.t-14")
         if headline_el:
             out["position"] = headline_el[0].text.strip() or None
-        # Ubicación: span bajo el headline (LinkedIn suele usar text-body-small o similar)
         for sel in (
             "span.text-body-small.inline.t-black--light",
             "div.text-body-small.inline.t-black--light",
-            "[data-test-id='profile-contact-info-location']",
             "span.inline.t-black--light.break-words",
         ):
             loc_el = driver.find_elements(By.CSS_SELECTOR, sel)
             if loc_el and loc_el[0].text.strip():
                 txt = loc_el[0].text.strip()
-                if len(txt) < 200 and not txt.startswith("http"):  # evita ruido
+                if len(txt) < 200 and not txt.startswith("http"):
                     out["location"] = txt
                     break
-        # Empresa: a veces en el headline ("Role at Company") o en la primera experiencia
         if out["position"] and " at " in out["position"]:
             out["company"] = out["position"].split(" at ")[-1].strip()
-        for sel in (
-            "section[data-section='experience'] div.display-flex span[aria-hidden='true']",
-            "div#experience-section ~ div a[href*='/company/']",
-            "a[data-field='experience_company_logo']",
-        ):
-            try:
-                company_el = driver.find_elements(By.CSS_SELECTOR, sel)
-                if company_el and company_el[0].text.strip() and not out.get("company"):
-                    out["company"] = company_el[0].text.strip()[:200]
-                    break
-            except Exception:
-                pass
         if out.get("name") or out.get("position") or out.get("location") or out.get("company"):
             return out
     except Exception:
@@ -801,117 +577,273 @@ def _extract_person_from_dom(driver) -> Optional[Dict]:
     return None
 
 
-def _extract_suggested_connections_from_page(driver, current_public_id: str) -> list:
-    """Extrae de la página del perfil los enlaces a 'conexiones en común' y 'personas que quizá conozcas'.
-
-    LinkedIn muestra en el lateral (o en la página) un bloque con conexiones en común y a veces
-    sugerencias (PYMK). Buscamos todos los enlaces a perfiles /in/SLUG que no sean el perfil
-    actual y los devolvemos con source='mutual' o 'pymk' si logramos identificar el bloque.
+def _is_valid_phone(text: str) -> bool:
     """
-    from selenium.webdriver.common.by import By
+    Verifica si un texto es un número de teléfono válido.
+    - Sin letras ni acentos (excluye "Móvil", "Trabajo", etc.)
+    - Sin puntos (los separan de versiones como 1.13.42781)
+    - Al menos 7 dígitos
+    - Solo contiene dígitos, espacios, guiones, paréntesis y el prefijo +
+    """
+    if not text or len(text) > 25:
+        return False
+    if re.search(r'[a-zA-ZÀ-ÿ]', text):
+        return False
+    if "." in text:  # versiones (1.13.42781) u otros formatos no telefónicos
+        return False
+    digits = re.sub(r'\D', '', text)
+    return len(digits) >= 7 and bool(re.match(r'^[\+\d][\d\s\-\(\)]+$', text))
 
-    result = []
-    seen = set()
-    current_public_id = (current_public_id or "").strip().lower()
 
+def _extract_contact_info_from_overlay(driver, slug: str) -> Dict:
+    """
+    Navega al overlay de información de contacto del perfil y extrae email y teléfono.
+
+    Estructura real del overlay de LinkedIn:
+      <h3 class="pv-contact-info__header …">\\n  Teléfono\\n</h3>
+      <ul class="list-style-none">
+        <li>
+          <span class="t-14 t-black t-normal">653329820</span>
+          <span class="t-14 t-black--light t-normal">(Trabajo)</span>
+        </li>
+      </ul>
+
+    Para el email: enlaces <a href="mailto:…"> (fiable).
+    Para el teléfono: XPath al <h3> que contenga "Teléfono"/"Phone" → <ul> siguiente
+    → <span class="t-14 t-black t-normal"> (el que NO tiene t-black--light).
+    """
+    result: Dict = {"emails": None, "phones": None}
     try:
-        # Pequeño scroll para que el sidebar cargue (contenido lazy)
-        driver.execute_script("window.scrollTo(0, 400);")
-        time.sleep(1)
-        driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(0.5)
+        overlay_url = f"https://www.linkedin.com/in/{slug}/overlay/contact-info/"
+        driver.get(overlay_url)
+        try:
+            WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "div.pv-contact-info, h3.pv-contact-info__header, a[href^='mailto:']")
+                )
+            )
+        except Exception:
+            time.sleep(3)
 
-        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='linkedin.com/in/']")
-        for a in links:
+        # ── Emails: enlaces mailto: ───────────────────────────────────────────────
+        emails = []
+        for a in driver.find_elements(By.CSS_SELECTOR, "a[href^='mailto:']"):
+            href = a.get_attribute("href") or ""
+            addr = href.replace("mailto:", "").strip()
+            if addr and "@" in addr and "linkedin.com" not in addr and addr not in emails:
+                emails.append(addr)
+
+        # ── Teléfonos: XPath al h3 con texto "Teléfono"/"Phone" ──────────────────
+        # La estructura del overlay tiene el h3 y la ul como HERMANOS dentro del mismo
+        # contenedor. El h3 tiene espacios/saltos alrededor del texto, por eso se usa
+        # normalize-space() en lugar de text()=.
+        phones = []
+        phone_xpath = (
+            "//h3[contains(normalize-space(.), 'Teléfono') "
+            "or contains(normalize-space(.), 'Phone') "
+            "or contains(normalize-space(.), 'Tel')]"
+        )
+        for h3 in driver.find_elements(By.XPATH, phone_xpath):
             try:
-                href = a.get_attribute("href") or ""
-                m = re.search(r"linkedin\.com/in/([^/?]+)", href)
-                if not m:
-                    continue
-                slug = m.group(1).rstrip("/").lower()
-                if slug == current_public_id or len(slug) < 3:
-                    continue
-                if slug in seen:
-                    continue
-                seen.add(slug)
-                name = (a.text or "").strip()
-                if len(name) > 120:
-                    name = name[:120]
-                # Intentar etiquetar: si el enlace está en un contenedor con "mutual" o "conexiones en común" -> mutual
-                source = "suggested"
-                try:
-                    parent = a.find_element(By.XPATH, "./ancestor::*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mutual') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'conexiones en común') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'conexión en común')][1]")
-                    if parent:
-                        source = "mutual"
-                except Exception:
-                    try:
-                        parent = a.find_element(By.XPATH, "./ancestor::*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'personas que quizá') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'people you may know')][1]")
-                        if parent:
-                            source = "pymk"
-                    except Exception:
-                        pass
-                result.append({
-                    "profile_id": slug,
-                    "name": name or None,
-                    "profile_link": f"https://www.linkedin.com/in/{slug}/",
-                    "source": source,
-                })
+                # El <ul> con los números está como hermano siguiente del <h3>
+                ul = h3.find_element(By.XPATH, "following-sibling::ul[1]")
+                # Span con la clase t-black t-normal = el número (no la etiqueta "Móvil")
+                for span in ul.find_elements(
+                    By.CSS_SELECTOR,
+                    "span.t-14.t-black.t-normal, span.t-black.t-normal"
+                ):
+                    text = span.text.strip()
+                    if _is_valid_phone(text) and text not in phones:
+                        phones.append(text)
             except Exception:
-                continue
-    except Exception:
-        pass
+                pass
+
+        # Fallback: si XPath no encontró nada, buscar en BeautifulSoup con regex sin anclas
+        if not phones:
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            for header in soup.find_all(
+                string=re.compile(r"Tel[eé]fono|Phone|Tel\b", re.IGNORECASE)
+            ):
+                # Navegar hasta el contenedor padre que tenga hermanos con el número
+                node = header.parent
+                for _ in range(5):
+                    if node is None:
+                        break
+                    sibling = node.find_next_sibling("ul")
+                    if sibling:
+                        for span in sibling.find_all("span"):
+                            text = span.get_text(strip=True)
+                            if _is_valid_phone(text) and text not in phones:
+                                phones.append(text)
+                        break
+                    node = node.parent
+
+        if emails:
+            result["emails"] = "; ".join(emails)
+        if phones:
+            result["phones"] = "; ".join(phones[:3])
+
+    except Exception as e:
+        _log.debug("_extract_contact_info_from_overlay (%s) falló: %s", slug, e)
+
     return result
 
 
-def _scrape_profile_via_browser(
-    account: LinkedInAccount, url: str, public_id: str
-) -> Tuple[Optional[Dict], list]:
-    """Carga el perfil en un navegador real con las cookies de la sesión y extrae JSON-LD.
-
-    LinkedIn sirve el JSON-LD cuando la página se renderiza.
-    También extrae la lista de conexiones en común / personas que quizá conozcas si aparecen.
-    Devuelve (dict_perfil, lista_sugeridos).
+def _extract_extra_from_dom(driver) -> Dict:
     """
-    driver = None
+    Extrae del DOM del perfil los campos que no están en JSON-LD:
+    profile_photo, followers, connections, premium, creator, open_to_work.
+    """
+    result: Dict = {
+        "profile_photo": None,
+        "followers": None,
+        "connections": None,
+        "premium": None,
+        "creator": None,
+        "open_to_work": None,
+    }
     try:
-        from staffspy.utils.utils import get_webdriver
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options as ChromeOptions
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.common.by import By
-    except ImportError:
+        # ── Foto de perfil ────────────────────────────────────────────────────
+        for sel in [
+            "img.pv-top-card-profile-picture__image-v2",
+            "img.profile-photo-edit__preview",
+            "img[class*='profile-picture']",
+            "button.pv-top-card-profile-picture__edit-overlay img",
+        ]:
+            els = driver.find_elements(By.CSS_SELECTOR, sel)
+            if els:
+                src = els[0].get_attribute("src") or ""
+                if src and "ghost" not in src and "static" not in src:
+                    result["profile_photo"] = src
+                    break
+
+        # ── Conexiones y seguidores ───────────────────────────────────────────
+        # LinkedIn muestra "X seguidores" y "X contactos" en el perfil
+        page_text = driver.find_element(By.TAG_NAME, "body").text
+        for pattern, key in [
+            (r'([\d,\.]+\s*(?:K|M)?)\s*(?:followers|seguidores)', "followers"),
+            (r'([\d,\.]+\+?)\s*(?:connections?|contactos)', "connections"),
+        ]:
+            m = re.search(pattern, page_text, re.IGNORECASE)
+            if m:
+                result[key] = m.group(1).strip()
+
+        # ── Premium ───────────────────────────────────────────────────────────
+        premium_els = driver.find_elements(
+            By.CSS_SELECTOR,
+            "li-icon[type*='premium'], .premium-icon, [aria-label*='Premium'], [class*='premium-badge']"
+        )
+        result["premium"] = len(premium_els) > 0 or None
+
+        # ── Creator ───────────────────────────────────────────────────────────
+        creator_els = driver.find_elements(
+            By.CSS_SELECTOR, "[class*='creator-badge'], [aria-label*='Creator']"
+        )
+        if not creator_els:
+            creator_els = [el for el in driver.find_elements(By.CSS_SELECTOR, "span.t-14")
+                           if "creator" in (el.text or "").lower()]
+        result["creator"] = len(creator_els) > 0 or None
+
+        # ── Open to work ──────────────────────────────────────────────────────
+        otw_els = driver.find_elements(
+            By.CSS_SELECTOR,
+            "#open-to-work-overlay-text, [class*='open-to-work'], [aria-label*='Open to work']"
+        )
+        if not otw_els:
+            otw_els = [el for el in driver.find_elements(By.CSS_SELECTOR, "span.t-14, div.t-14")
+                       if "open to work" in (el.text or "").lower()
+                       or "abierto a trabajar" in (el.text or "").lower()]
+        result["open_to_work"] = len(otw_els) > 0 or None
+
+    except Exception as e:
+        _log.debug("_extract_extra_from_dom falló: %s", e)
+
+    return result
+
+
+def _extract_internal_id_from_html(html: str, public_id: Optional[str] = None) -> Optional[str]:
+    """Extrae el id interno (ACoA…) del perfil desde el HTML renderizado."""
+    if not html:
+        return None
+    acoa_pat = re.compile(r'(ACoA[A-Za-z0-9_-]{22,})')
+    if public_id:
+        public_escaped = re.escape(public_id)
+        for m in re.finditer(rf'publicIdentifier["\']?\s*:\s*["\']?{public_escaped}', html):
+            start = max(0, m.start() - 500)
+            end = min(len(html), m.end() + 3000)
+            chunk = html[start:end]
+            aco = acoa_pat.search(chunk)
+            if aco:
+                return aco.group(1)
+        for m in re.finditer(public_escaped, html):
+            start = m.start()
+            end = min(len(html), m.end() + 2500)
+            chunk = html[start:end]
+            aco = acoa_pat.search(chunk)
+            if aco:
+                return aco.group(1)
+        return None
+    patterns = [
+        r'urn:li:fsd_profile:(ACoA[A-Za-z0-9_-]{20,})',
+        r'"profileId"\s*:\s*"(ACoA[A-Za-z0-9_-]{20,})"',
+        r'entityUrn["\']?\s*:\s*["\']?urn:li:fsd_profile:(ACoA[A-Za-z0-9_-]+)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html)
+        if m:
+            return m.group(1)
+    return None
+
+
+# ── Driver con cookies ─────────────────────────────────────────────────────────
+
+def _create_driver_with_cookies(session: LinkedInSession, headless: Optional[bool] = None):
+    """
+    Crea un WebDriver con las cookies de la sesión ya inyectadas.
+    Si headless=None usa la variable de entorno HEADLESS (por defecto True).
+    Aplica el script stealth antes de la primera navegación.
+    Devuelve el driver listo para navegar, o None si no se puede crear.
+    """
+    use_headless = HEADLESS if headless is None else headless
+    try:
+        driver = webdriver.Chrome(options=_make_chrome_options(headless=use_headless))
+    except Exception as e:
+        _log.error("No se pudo crear el WebDriver: %s", e)
+        return None
+    try:
+        _apply_stealth(driver)
+        driver.get("https://www.linkedin.com")
+        time.sleep(random.uniform(1.5, 3.0))
+        _inject_cookies(driver, session.cookies)
+        driver.refresh()
+        time.sleep(random.uniform(1.5, 2.5))
+        return driver
+    except Exception as e:
+        _log.error("Error inyectando cookies en el driver: %s", e)
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        return None
+
+
+# ── Scraping de perfil ─────────────────────────────────────────────────────────
+
+def _scrape_profile_via_browser(
+    session: LinkedInSession, url: str, public_id: str, driver=None
+) -> Tuple[Optional[Dict], list]:
+    """
+    Carga el perfil con Selenium y extrae datos desde JSON-LD y/o el DOM.
+    Si se proporciona `driver`, lo usa sin cerrarlo al acabar.
+    Si no, crea uno propio y lo cierra al finalizar.
+    Devuelve (dict_perfil_normalizado, []).
+    """
+    owned = driver is None
+    if owned:
+        driver = _create_driver_with_cookies(session)
+    if not driver:
         return None, []
     try:
-        driver = get_webdriver(None)
-    except Exception:
-        driver = None
-    if not driver:
-        try:
-            opts = ChromeOptions()
-            opts.add_argument("--headless=new")
-            opts.add_argument("--no-sandbox")
-            opts.add_argument("--disable-dev-shm-usage")
-            opts.add_argument("--disable-blink-features=AutomationControlled")
-            opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-            driver = webdriver.Chrome(options=opts)
-        except Exception as e:
-            print(f"   (Navegador no disponible para fallback: {e})")
-            return None, []
-    try:
-        driver.get("https://www.linkedin.com")
-        time.sleep(2)
-        for c in account.session.cookies:
-            domain = c.domain if c.domain else ".linkedin.com"
-            if not domain.startswith(".") and "linkedin" in domain:
-                domain = "." + domain
-            try:
-                driver.add_cookie({"name": c.name, "value": c.value, "domain": domain})
-            except Exception:
-                pass
-        # Recargar la home para que las cookies se apliquen y no salga "error al cargar"
-        driver.refresh()
-        time.sleep(2)
         driver.get(url)
         try:
             WebDriverWait(driver, BROWSER_PROFILE_WAIT).until(
@@ -919,8 +851,7 @@ def _scrape_profile_via_browser(
             )
         except Exception:
             pass
-        # Recarga automática del perfil: la primera carga a veces muestra "error al cargar";
-        # la segunda ya va con sesión y muestra el perfil (evita tener que pulsar recargar a mano)
+        # Segunda carga para que la SPA inyecte el JSON-LD
         driver.refresh()
         time.sleep(3)
         try:
@@ -929,24 +860,19 @@ def _scrape_profile_via_browser(
             )
         except Exception:
             pass
-        # Esperar a que la SPA inyecte JSON-LD (LinkedIn puede cargarlo tras unos segundos)
         html = driver.page_source
         for _ in range(BROWSER_PROFILE_WAIT):
             if "application/ld+json" in html or ('"givenName"' in html and '"headline"' in html):
                 break
             time.sleep(1)
             html = driver.page_source
-        if "authwall" in html.lower() or "login" in html.lower() and "linkedin.com/in" in url:
-            pass
+
         row = _extract_person_from_any_script(html)
         if not row:
             row = _extract_person_from_dom(driver)
-        # ID interno del perfil visitado (no del viewer), desde el HTML renderizado
-        internal_id = _extract_internal_id_from_html(html, public_id)
-        if internal_id:
-            print(f"   [LOG] ID interno desde HTML del navegador: {internal_id[:25]}...")
+
         if row and (row.get("name") or row.get("position") or row.get("company")):
-            out = {
+            return {
                 "profile_id": public_id,
                 "name": row.get("name"),
                 "first_name": row.get("first_name"),
@@ -960,267 +886,475 @@ def _scrape_profile_via_browser(
                 "followers": None,
                 "connections": None,
                 "profile_link": url,
-                "profile_photo": None,
+                "profile_photo": row.get("profile_photo"),
                 "premium": None,
                 "creator": None,
                 "open_to_work": None,
-            }
-            if internal_id:
-                out["_internal_id"] = internal_id  # clave interna, no se guarda en CSV
-            # Extraer conexiones en común / personas que quizá conozcas de la misma página
-            suggested = _extract_suggested_connections_from_page(driver, public_id)
-            if suggested:
-                print(f"   [LOG] Encontradas {len(suggested)} sugerencias (conexiones en común / PYMK)")
-            return out, suggested
+            }, []
+        return None, []
     finally:
-        if driver:
+        if owned:
             try:
                 driver.quit()
             except Exception:
                 pass
-    return None, []
 
 
-def _scrape_profile_by_url_fallback(
-    account: LinkedInAccount, url: str, public_id: str, profile_view_json: Optional[dict] = None
-) -> Dict:
-    """Fallback: mismos campos que conexiones; datos desde profileView JSON y/o HTML JSON-LD."""
-    # Misma estructura que normalize_profile_row para que el CSV tenga las mismas columnas
-    data: Dict = {
-        "profile_id": public_id,
-        "name": None,
+# ── Scraping de conexiones ─────────────────────────────────────────────────────
+
+def _build_connection_dict(slug: str, name: Optional[str], position: Optional[str]) -> Dict:
+    """Construye el dict normalizado de una conexión."""
+    return {
+        "profile_id": slug,
+        "name": name,
         "first_name": None,
         "last_name": None,
-        "position": None,
+        "position": position,
         "company": None,
         "location": None,
         "emails": None,
         "phones": None,
-        "is_connection": None,
+        "is_connection": True,
         "followers": None,
         "connections": None,
-        "profile_link": url,
+        "profile_link": f"https://www.linkedin.com/in/{slug}/",
         "profile_photo": None,
         "premium": None,
         "creator": None,
         "open_to_work": None,
     }
-    if profile_view_json:
-        extracted = _extract_from_profile_view_json(profile_view_json)
-        data.update({k: v for k, v in extracted.items() if v is not None})
-    # Complementar con JSON-LD del HTML si hay
-    try:
-        resp = account.session.get(url)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        script_tag = soup.find("script", type="application/ld+json")
-        if script_tag and script_tag.string:
-            parsed = json.loads(script_tag.string)
-            person = None
-            if isinstance(parsed, dict) and "@graph" in parsed:
-                person = next((x for x in parsed["@graph"] if x.get("@type") == "Person"), None)
-            elif isinstance(parsed, dict):
-                person = parsed
-            if person:
-                if not data.get("name"):
-                    data["name"] = person.get("name")
-                if not data.get("first_name"):
-                    data["first_name"] = person.get("givenName")
-                if not data.get("last_name"):
-                    data["last_name"] = person.get("familyName")
-                if not data.get("position"):
-                    data["position"] = person.get("headline")
-                if not data.get("company"):
-                    w = person.get("worksFor")
-                    if isinstance(w, list) and w:
-                        data["company"] = w[0].get("name")
-                    elif isinstance(w, dict):
-                        data["company"] = w.get("name")
-                if not data.get("location"):
-                    addr = person.get("address") or {}
-                    if isinstance(addr, dict):
-                        data["location"] = ", ".join(
-                            filter(None, [addr.get("addressLocality"), addr.get("addressRegion"), addr.get("addressCountry")]))
-                    if not data.get("location"):
-                        data["location"] = None
-    except Exception:
-        pass
-    return data
 
 
-def scrape_profile_by_url(account: LinkedInAccount, url: str) -> Tuple[Dict, list]:
-    """Scrapea un perfil por URL con los mismos campos que las conexiones.
-
-    Primero intenta el API interno (profileView + fetch_all_info_for_employee)
-    para obtener nombre, empresa, ubicación, email/teléfono si está visible.
-    Si no se puede resolver id/urn, extrae lo posible del JSON de profileView y del HTML.
-    Cuando se usa el navegador, además extrae conexiones en común / personas que quizá conozcas.
-    Devuelve (dict_perfil, lista_sugeridos).
+def _extract_connection_cards_from_driver(driver) -> list:
     """
-    print(f"\n📄 Scrapeando perfil por URL:\n   {url}")
-    m = re.search(r"linkedin\.com/in/([^/?]+)", url)
-    public_id = m.group(1).rstrip("/") if m else ""
+    Extrae las tarjetas de conexión visibles en el DOM.
+    Prueba en orden:
+    1. Selectores específicos de /mynetwork/ (li.mn-connection-card)
+    2. Selectores de /search/results/people/
+    3. Fallback genérico: todos los a[href*="/in/"]
+    """
+    results = []
+    seen_slugs: set = set()
 
-    # Obtener profileView una vez para usarlo en resolución y en fallback
-    profile_view_json = None
-    try:
-        r = account.session.get(PROFILE_VIEW_EP.format(user_id=public_id))
-        if r.ok:
-            profile_view_json = r.json()
-        print(f"   [LOG] profileView API: status={r.status_code}, json={'ok' if profile_view_json else 'no'}")
-    except Exception as e:
-        print(f"   [LOG] profileView API error: {e}")
+    # 1) Página de conexiones (/mynetwork/)
+    cards = driver.find_elements(By.CSS_SELECTOR, "li.mn-connection-card")
+    if not cards:
+        cards = driver.find_elements(By.CSS_SELECTOR, "li[class*='connection-card']")
 
-    resolved = _resolve_public_id_to_internal(account.session, public_id, profile_view_json) if profile_view_json else None
-    if resolved:
-        print(f"   [LOG] ID interno resuelto por API: {resolved[0][:25]}...")
-    if not resolved:
-        # Intentar extraer id interno desde el HTML de la página del perfil
-        internal_id = _extract_internal_id_from_profile_html(account.session, url, public_id)
-        if internal_id:
-            resolved = (internal_id, internal_id)
-            print(f"   [LOG] ID interno resuelto por HTML: {internal_id[:25]}...")
-    if not resolved and profile_view_json:
-        internal_id = _extract_internal_id_from_profile_view(profile_view_json)
-        if internal_id:
-            resolved = (internal_id, internal_id)
-            print(f"   [LOG] ID interno extraído de profileView JSON: {internal_id[:25]}...")
-    if not resolved:
-        print(f"   [LOG] No se pudo obtener ID interno (ni API ni HTML ni profileView)")
-    if resolved:
-        internal_id, urn = resolved
-        staff = Staff(
-            id=internal_id,
-            urn=urn,
-            search_term="url",
-            profile_id=public_id,
-            profile_link=url,
-        )
-        li_scraper = LinkedInScraper(account.session)
-        li_scraper.num_staff = 1
-        try:
-            li_scraper.fetch_all_info_for_employee(staff, 1)
-            # StaffSpy solo pide email/teléfono cuando is_connection=True (lista de conexiones).
-            # Para perfil por URL, pedimos contact info a mano; LinkedIn solo lo devuelve si es tu conexión.
+    if cards:
+        for card in cards:
             try:
-                ContactInfoFetcher(account.session).fetch_contact_info(staff)
+                link_els = card.find_elements(
+                    By.CSS_SELECTOR, "a.mn-connection-card__link, a[href*='/in/']"
+                )
+                if not link_els:
+                    continue
+                href = link_els[0].get_attribute("href") or ""
+                m = re.search(r"linkedin\.com/in/([^/?#]+)", href)
+                if not m:
+                    continue
+                slug = m.group(1).rstrip("/").lower()
+                if not slug or len(slug) < 2 or slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+
+                name = None
+                for sel in ["span.mn-connection-card__name", "span[class*='name']", ".actor-name"]:
+                    els = card.find_elements(By.CSS_SELECTOR, sel)
+                    if els and els[0].text.strip():
+                        name = els[0].text.strip()
+                        break
+
+                position = None
+                for sel in [
+                    "span.mn-connection-card__occupation",
+                    "p.mn-connection-card__occupation",
+                    "p[class*='occupation']",
+                    "span[class*='occupation']",
+                ]:
+                    els = card.find_elements(By.CSS_SELECTOR, sel)
+                    if els and els[0].text.strip():
+                        position = els[0].text.strip()
+                        break
+
+                results.append(_build_connection_dict(slug, name, position))
+            except Exception:
+                continue
+        return results
+
+    # 2) Página de búsqueda (/search/results/people/)
+    search_cards = driver.find_elements(
+        By.CSS_SELECTOR,
+        "li.reusable-search__result-container, li[class*='result-container']",
+    )
+    if search_cards:
+        for card in search_cards:
+            try:
+                link_els = card.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
+                if not link_els:
+                    continue
+                href = link_els[0].get_attribute("href") or ""
+                m = re.search(r"linkedin\.com/in/([^/?#]+)", href)
+                if not m:
+                    continue
+                slug = m.group(1).rstrip("/").lower()
+                if not slug or len(slug) < 2 or slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+
+                name = None
+                for sel in ["span[class*='actor-name']", "span.t-16", "span[aria-hidden='true']"]:
+                    els = card.find_elements(By.CSS_SELECTOR, sel)
+                    if els and els[0].text.strip():
+                        txt = els[0].text.strip()
+                        if len(txt) < 80 and "\n" not in txt:
+                            name = txt
+                            break
+
+                position = None
+                for sel in [
+                    "div.entity-result__primary-subtitle",
+                    "div[class*='primary-subtitle']",
+                    "div[class*='subtitle']",
+                ]:
+                    els = card.find_elements(By.CSS_SELECTOR, sel)
+                    if els and els[0].text.strip():
+                        position = els[0].text.strip()
+                        break
+
+                results.append(_build_connection_dict(slug, name, position))
+            except Exception:
+                continue
+        return results
+
+    # 3) Fallback genérico
+    links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
+    for a in links:
+        try:
+            href = a.get_attribute("href") or ""
+            m = re.search(r"linkedin\.com/in/([^/?#]+)", href)
+            if not m:
+                continue
+            slug = m.group(1).rstrip("/").lower()
+            if not slug or len(slug) < 2 or slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+            name = a.text.strip() or None
+            if name and len(name) > 120:
+                name = None
+            results.append(_build_connection_dict(slug, name, None))
+        except Exception:
+            continue
+    return results
+
+
+def _collect_connection_slugs(driver, max_contacts: int) -> List[str]:
+    """
+    Navega por la página de conexiones y la página de búsqueda de primer grado
+    para recopilar slugs únicos hasta alcanzar max_contacts.
+    No extrae datos de cada perfil aquí — eso lo hace _enrich_connection_from_profile.
+    """
+    seen: set = set()
+    slugs: List[str] = []
+
+    def _extract_slugs_from_page() -> int:
+        """Extrae slugs de los enlaces /in/ visibles en la página actual. Devuelve cuántos nuevos."""
+        new = 0
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
+        for a in links:
+            if len(slugs) >= max_contacts:
+                break
+            try:
+                href = a.get_attribute("href") or ""
+                m = re.search(r"linkedin\.com/in/([^/?#]+)", href)
+                if not m:
+                    continue
+                slug = m.group(1).rstrip("/").lower()
+                # Excluir slugs que sean del propio usuario, menús u otras secciones
+                if not slug or len(slug) < 2 or slug in seen:
+                    continue
+                seen.add(slug)
+                slugs.append(slug)
+                new += 1
+            except Exception:
+                continue
+        return new
+
+    # Intentar primero la página de conexiones (/mynetwork/catch-up/connections/)
+    _log.info("Slug collection: cargando %s", _CONNECTIONS_URL)
+    driver.get(_CONNECTIONS_URL)
+    time.sleep(random.uniform(3.0, 5.0))
+
+    no_progress = 0
+    for scroll_i in range(max(20, max_contacts // 5 + 10)):
+        if len(slugs) >= max_contacts:
+            break
+        prev = len(slugs)
+        _extract_slugs_from_page()
+        if len(slugs) == prev:
+            no_progress += 1
+            if no_progress >= 4:
+                break
+            time.sleep(random.uniform(1.5, 3.0))
+        else:
+            no_progress = 0
+
+        steps = random.randint(2, 4)
+        for _ in range(steps):
+            driver.execute_script(f"window.scrollBy(0, {random.randint(300, 600)});")
+            time.sleep(random.uniform(0.2, 0.5))
+        time.sleep(random.uniform(1.0, 2.0))
+
+    if len(slugs) < max_contacts:
+        # Fallback: búsqueda de conexiones de primer grado
+        _log.info("Slug collection: fallback a búsqueda (%d/%d hasta ahora)", len(slugs), max_contacts)
+        driver.get(_CONNECTIONS_SEARCH_URL)
+        time.sleep(random.uniform(3.5, 5.5))
+        for _ in range(max(8, max_contacts // 8 + 5)):
+            if len(slugs) >= max_contacts:
+                break
+            _extract_slugs_from_page()
+            driver.execute_script("window.scrollBy(0, 700);")
+            time.sleep(random.uniform(1.5, 3.0))
+
+    _log.info("Slugs recopilados: %d", len(slugs))
+    return slugs[:max_contacts]
+
+
+def _enrich_connection_from_profile(driver, slug: str) -> Dict:
+    """
+    Visita el perfil de una conexión (y su overlay de contacto) usando el driver activo
+    para extraer todos los campos del CSV: nombre, posición, empresa, ubicación,
+    email, teléfono, foto, seguidores, conexiones, premium, creator, open_to_work.
+    """
+    url = f"https://www.linkedin.com/in/{slug}/"
+    try:
+        # ── 1. Cargar página de perfil ─────────────────────────────────────────
+        driver.get(url)
+        try:
+            WebDriverWait(driver, BROWSER_PROFILE_WAIT).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+        except Exception:
+            pass
+        # Esperar a que la SPA inyecte JSON-LD estructurado
+        for _ in range(10):
+            html = driver.page_source
+            if "application/ld+json" in html or '"givenName"' in html:
+                break
+            time.sleep(1)
+
+        html = driver.page_source
+
+        # ── 2. Extraer datos estructurados (JSON-LD) ───────────────────────────
+        row = _extract_person_from_any_script(html)
+        if not row:
+            row = _extract_person_from_dom(driver)
+
+        # ── 3. Extraer campos extra del DOM (foto, seguidores, premium, etc.) ──
+        extra = _extract_extra_from_dom(driver)
+
+        # ── 4. Visitar overlay de información de contacto ──────────────────────
+        time.sleep(random.uniform(1.5, 3.0))
+        contact = _extract_contact_info_from_overlay(driver, slug)
+
+        # ── 5. Construir resultado completo ────────────────────────────────────
+        result = _build_connection_dict(
+            slug,
+            row.get("name") if row else None,
+            row.get("position") if row else None,
+        )
+        if row:
+            result["first_name"] = row.get("first_name")
+            result["last_name"] = row.get("last_name")
+            result["company"] = row.get("company")
+            result["location"] = row.get("location")
+            # profile_photo puede venir del JSON-LD o del DOM
+            result["profile_photo"] = row.get("profile_photo") or extra.get("profile_photo")
+        else:
+            result["profile_photo"] = extra.get("profile_photo")
+
+        result["emails"] = contact.get("emails")
+        result["phones"] = contact.get("phones")
+        result["followers"] = extra.get("followers")
+        result["connections"] = extra.get("connections")
+        result["premium"] = extra.get("premium")
+        result["creator"] = extra.get("creator")
+        result["open_to_work"] = extra.get("open_to_work")
+        result["is_connection"] = True
+        result["profile_link"] = url
+
+        _log.debug(
+            "Enriquecido %s: name=%s pos=%s company=%s email=%s phone=%s",
+            slug, result.get("name"), result.get("position"),
+            result.get("company"), result.get("emails"), result.get("phones"),
+        )
+        return result
+
+    except Exception as e:
+        _log.warning("Error enriqueciendo %s: %s", slug, e)
+        return _build_connection_dict(slug, None, None)
+
+
+def scrape_connections_selenium(
+    session: LinkedInSession, max_contacts: int, driver=None
+) -> pd.DataFrame:
+    """
+    Scrapea las conexiones de LinkedIn usando Selenium con las cookies de sesión.
+
+    Si se proporciona `driver`, lo usa sin cerrarlo al acabar (driver compartido).
+    Si no, crea uno propio y lo cierra al finalizar.
+
+    Estrategia en dos fases:
+    1. Recopilación de slugs: navega por /mynetwork/catch-up/connections/ con scroll
+       para obtener todos los slugs de conexiones. Si no consigue suficientes, usa
+       la búsqueda de primer grado como fallback.
+    2. Enriquecimiento: visita el perfil de cada conexión para extraer nombre,
+       posición, empresa, ubicación, etc. (datos que la lista no muestra).
+
+    Si detecta authwall, login o soft-block, marca session.on_block y devuelve vacío.
+    """
+    _log.info("Iniciando scraping de conexiones con Selenium (máx. %d)...", max_contacts)
+    owned = driver is None
+    if owned:
+        driver = _create_driver_with_cookies(session)
+    if not driver:
+        _log.error("Selenium: no se pudo crear el WebDriver")
+        return pd.DataFrame()
+
+    try:
+        # ── Comprobación inicial de sesión ─────────────────────────────────────
+        driver.get("https://www.linkedin.com/feed/")
+        time.sleep(random.uniform(2.0, 3.5))
+        current_url = driver.current_url
+        if any(kw in current_url for kw in ("authwall", "/login", "checkpoint", "uas/login")):
+            _log.warning("Selenium: redirigido a '%s', sesión no válida", current_url)
+            session.on_block = True
+            return pd.DataFrame()
+        if _is_soft_blocked(driver):
+            _log.warning("Selenium: soft-block detectado en el feed")
+            print("⚠️  LinkedIn muestra captcha/verificación. Espera unos minutos.")
+            session.on_block = True
+            return pd.DataFrame()
+
+        # ── FASE 1: recopilar slugs ─────────────────────────────────────────────
+        print(f"   Fase 1/2: recopilando slugs de {max_contacts} conexiones...")
+        slugs = _collect_connection_slugs(driver, max_contacts)
+        print(f"   Fase 1/2: {len(slugs)} slugs obtenidos.")
+
+        if not slugs:
+            _log.warning("Selenium: 0 slugs encontrados")
+            return pd.DataFrame()
+
+        # ── FASE 2: enriquecer cada perfil ──────────────────────────────────────
+        print(f"   Fase 2/2: visitando perfiles para extraer datos completos...")
+        enriched: List[Dict] = []
+        for i, slug in enumerate(slugs):
+            # Comprobar soft-block periódicamente
+            if _is_soft_blocked(driver):
+                _log.warning("Selenium: soft-block durante enriquecimiento en perfil %d/%d", i + 1, len(slugs))
+                print(f"\n⚠️  LinkedIn mostró verificación/captcha en perfil {i+1}. Se detiene el scraping.")
+                session.on_block = True
+                break
+
+            print(f"   Perfil {i + 1}/{len(slugs)}: {slug}", end="\r", flush=True)
+            conn = _enrich_connection_from_profile(driver, slug)
+            enriched.append(conn)
+
+            # Pausa anti-detección entre visitas a perfiles
+            if i < len(slugs) - 1:
+                pause = random.uniform(4.0, 9.0)
+                time.sleep(pause)
+
+        print()  # nueva línea tras el \r de progreso
+        _log.info("Selenium: %d conexiones enriquecidas", len(enriched))
+
+        if not enriched:
+            return pd.DataFrame()
+        return pd.DataFrame(enriched)
+
+    except Exception as e:
+        _log.error("Error en scrape_connections_selenium: %s", e)
+        return pd.DataFrame()
+    finally:
+        if owned:
+            try:
+                driver.quit()
             except Exception:
                 pass
-            return normalize_profile_row(pd.Series(staff.to_dict())), []
-        except Exception as e:
-            print(f"   [LOG] fetch_all_info_for_employee falló: {e}")
-            pass
-
-    # Obtener ID interno para contact info (usar en fallback y en resultado navegador)
-    cid, curn = None, None
-    if resolved:
-        cid, curn = internal_id, urn
-    elif profile_view_json:
-        cid = _extract_internal_id_from_profile_view(profile_view_json)
-        curn = cid
-    if not cid:
-        cid = _extract_internal_id_from_profile_html(account.session, url, public_id)
-        curn = cid
-
-    # Fallback 1: extraer del JSON de profileView y/o HTML con requests
-    result = _scrape_profile_by_url_fallback(account, url, public_id, profile_view_json)
-    has_data = result.get("name") or result.get("position") or result.get("company")
-    # Pedir contact info si tenemos ID interno
-    if cid and curn:
-        print(f"   [LOG] Pidiendo contact info para internal_id={cid[:25]}...")
-        _fetch_and_merge_contact_info(account, cid, curn, public_id, url, result)
-    else:
-        print(f"   [LOG] No hay ID interno para contact info (resolved={bool(resolved)}, profile_view_json={bool(profile_view_json)})")
-    if has_data:
-        return result, []
-
-    # Fallback 2: cargar perfil en navegador real (como ScrapFly / linkedin-mcp-server)
-    # LinkedIn suele incluir JSON-LD solo cuando la página se renderiza; además extraemos sugeridos
-    print("   ⚠️  Probando con navegador (Chrome headless) para extraer JSON-LD del perfil…")
-    browser_result, suggested = _scrape_profile_via_browser(account, url, public_id)
-    if browser_result and (browser_result.get("name") or browser_result.get("position") or browser_result.get("company")):
-        # Contact info: usar ID del navegador si no teníamos uno (profileView 410)
-        bid = browser_result.pop("_internal_id", None)
-        if bid:
-            cid, curn = bid, bid
-        if cid and curn:
-            print(f"   [LOG] Fusionando contact info en resultado del navegador (internal_id={cid[:25]}...)")
-            _fetch_and_merge_contact_info(account, cid, curn, public_id, url, browser_result)
-        return browser_result, suggested
-
-    if not has_data:
-        print("   ⚠️  No se pudo obtener datos del perfil (API, HTML ni navegador).")
-    return result, []
 
 
-def scrape_single_profile(account: LinkedInAccount, username: str) -> Dict:
-    """Scrapea y normaliza un único perfil por username de LinkedIn."""
-    print(f"\n📋 Scrapeando perfil: {username}")
-    try:
-        users = account.scrape_users(user_ids=[username])
-    except Exception as exc:  # StaffSpy puede romperse si LinkedIn cambia
-        raise RuntimeError(
-            f"No se pudo scrapear el usuario '{username}' con StaffSpy "
-            f"(scrape_users falló): {exc}"
-        ) from exc
-
-    if users.empty:
-        raise ValueError(f"No se pudo obtener el perfil de {username}")
-
-    row = users.iloc[0]
-    return normalize_profile_row(row)
-
+# ── API pública del módulo ─────────────────────────────────────────────────────
 
 def scrape_connections(
-    account: LinkedInAccount, max_contacts: int
+    session: LinkedInSession, max_contacts: int, driver=None
 ) -> pd.DataFrame:
-    """Scrapea y normaliza las conexiones de tu cuenta."""
+    """Scrapea las conexiones de tu cuenta usando Selenium."""
     print(f"\n👥 Scrapeando conexiones (máx. {max_contacts})...")
-    try:
-        df = account.scrape_connections(
-            extra_profile_data=True,
-            max_results=max_contacts,
-        )
-    except requests.exceptions.TooManyRedirects as e:
-        _log.warning("TooManyRedirects al obtener conexiones: %s", e)
-        # Tratarlo como 429: marcar bloqueo y activar cooldown para no seguir haciendo peticiones
-        account.on_block = True
-        print("⚠️  LinkedIn está redirigiendo en bucle (demasiadas peticiones o verificación). Se aplica el mismo cooldown que con 429.")
-        return pd.DataFrame()
-    if df.empty:
-        return df
-
-    normalized_rows = [normalize_profile_row(row) for _, row in df.iterrows()]
-    return pd.DataFrame(normalized_rows)
+    return scrape_connections_selenium(session, max_contacts, driver=driver)
 
 
 def scrape_profile_and_connections(
-    account: LinkedInAccount, username: str, max_contacts: int
+    session: LinkedInSession, username: str, max_contacts: int
 ) -> Tuple[Dict, pd.DataFrame]:
-    """Orquestador: devuelve perfil principal (si se puede) + conexiones.
-
-    Si StaffSpy falla al scrapear el perfil (scrape_users roto por cambios
-    en LinkedIn), seguimos igualmente con las conexiones y devolvemos
-    un perfil mínimo con el error adjunto.
     """
-    try:
-        perfil = scrape_single_profile(account, username)
-    except Exception as exc:
-        print(
-            f"⚠️  No se pudo scrapear el perfil '{username}' con StaffSpy. "
-            "Probablemente LinkedIn haya cambiado su estructura.\n"
-            "   Seguimos igualmente con las conexiones de TU cuenta.\n"
-            f"   Detalle técnico: {exc}"
-        )
-        perfil = {
-            "profile_id": username,
-            "name": None,
-            "company": None,
-            "location": None,
-            "emails": None,
-            "phones": None,
-            "scrape_error": str(exc),
-        }
+    Orquestador: scrapea el perfil propio + conexiones con un único driver Chrome.
+    Abre el navegador una sola vez, lo reutiliza en todo el proceso y lo cierra al final.
+    Devuelve (dict_perfil, DataFrame_conexiones).
+    """
+    profile_url = f"https://www.linkedin.com/in/{username}/"
+    perfil: Optional[Dict] = None
 
-    conexiones = scrape_connections(account, max_contacts)
+    # Abrir un único driver para todo el proceso (perfil + conexiones)
+    driver = _create_driver_with_cookies(session)
+    if not driver:
+        _log.error("No se pudo crear el WebDriver para scrape_profile_and_connections")
+        return {
+            "profile_id": username, "name": None, "first_name": None,
+            "last_name": None, "position": None, "company": None,
+            "location": None, "emails": None, "phones": None,
+            "is_connection": None, "followers": None, "connections": None,
+            "profile_link": profile_url, "profile_photo": None,
+            "premium": None, "creator": None, "open_to_work": None,
+            "scrape_error": "No se pudo crear el WebDriver",
+        }, pd.DataFrame()
+
+    try:
+        # ── Perfil ────────────────────────────────────────────────────────────
+        print(f"\n📋 Scrapeando perfil: {username}")
+        try:
+            result = _scrape_profile_via_browser(session, profile_url, username, driver=driver)
+            if result and result[0]:
+                perfil = result[0]
+        except Exception as exc:
+            _log.warning("Error scrapeando perfil '%s': %s", username, exc)
+
+        if perfil is None:
+            _log.warning("No se pudo obtener el perfil '%s'. Continuando con las conexiones.", username)
+            print(f"⚠️  No se pudo obtener el perfil '{username}'. Continuando con las conexiones...")
+            perfil = {
+                "profile_id": username,
+                "name": None, "first_name": None, "last_name": None,
+                "position": None, "company": None, "location": None,
+                "emails": None, "phones": None, "is_connection": None,
+                "followers": None, "connections": None,
+                "profile_link": profile_url, "profile_photo": None,
+                "premium": None, "creator": None, "open_to_work": None,
+                "scrape_error": "No se pudo obtener el perfil",
+            }
+
+        # ── Pausa entre perfil y conexiones ───────────────────────────────────
+        pause = random.uniform(4.0, 8.0)
+        _log.debug("Pausa de %.1fs entre perfil y conexiones (anti-detección)", pause)
+        time.sleep(pause)
+
+        # ── Conexiones (mismo driver, sin cerrar y reabrir Chrome) ────────────
+        conexiones = scrape_connections(session, max_contacts, driver=driver)
+
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
     return perfil, conexiones
