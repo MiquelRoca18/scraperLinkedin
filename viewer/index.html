@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Contactos de LinkedIn</title>
+  <title>LinkedIn Scraper</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f4f4f6; color: #111; min-height: 100vh; transition: background .25s, color .25s; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f4f4f6; color: #111; min-height: 100vh; }
 
     /* ── Dark mode ── */
     body.dark { background: #0f0f12; color: #e4e4e7; }
@@ -14,32 +14,48 @@
     body.dark .btn-theme { background: #27272a; color: #e4e4e7; }
     body.dark #auth-box { background: #18181b; border-color: #27272a; }
     body.dark #auth-box input { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
-    body.dark .scrape-card { background: #18181b; border-color: #27272a; }
-    body.dark .scrape-card p { color: #a1a1aa; }
-    body.dark .scrape-status { color: #a1a1aa; }
+    body.dark .tabs { border-bottom-color: #27272a; }
+    body.dark .tab-btn { color: #a1a1aa; }
+    body.dark .tab-btn.on { color: #60a5fa; border-bottom-color: #60a5fa; }
+    body.dark .acc-card { background: #18181b; border-color: #27272a; }
+    body.dark .acc-name { color: #fafafa; }
+    body.dark .acc-meta { color: #a1a1aa; }
+    body.dark .stat-box { background: #27272a; }
+    body.dark .stat-label { color: #a1a1aa; }
+    body.dark .stat-val { color: #60a5fa; }
+    body.dark .modal { background: #18181b; }
+    body.dark .modal h3 { color: #fafafa; }
+    body.dark .form-label { color: #a1a1aa; }
+    body.dark .form-input { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .form-input:focus { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.15); }
+    body.dark .form-hint { color: #52525b; }
     body.dark .btn-outline { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
     body.dark .btn-outline:hover { background: #3f3f46; }
-    body.dark .list-head h2 { color: #fafafa; }
-    body.dark .list-summary { color: #a1a1aa; }
+    body.dark .filter-bar { background: #18181b; border-color: #27272a; }
+    body.dark .ct-stat-bar { background: #1c1c1f; border-color: #27272a; color: #a1a1aa; }
+    body.dark .ct-stat-bar select { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    .ct-stat-bar select { padding: .3rem .5rem; border-radius: 6px; border: 1px solid #ccc; font-size: .83rem; background: #fff; color: #111; }
+    body.dark .run-banner { background: #1e3a5f; border-color: #1d4ed8; color: #93c5fd; }
     body.dark .table-outer { background: #18181b; border-color: #27272a; }
-    body.dark .exports-table th { background: #1f1f23; color: #a1a1aa; border-bottom-color: #27272a; }
-    body.dark .exports-table td { border-bottom-color: #27272a; }
-    body.dark .exports-table tr:hover td { background: #1c1c1f; }
-    body.dark .dd-menu { background: #27272a; border-color: #3f3f46; }
-    body.dark .dd-menu a, body.dark .dd-menu button { color: #e4e4e7; }
-    body.dark .dd-menu a:hover, body.dark .dd-menu button:hover { background: #3f3f46; }
-    body.dark .detail-toolbar { background: #18181b; border-color: #27272a; }
-    body.dark .search-box { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
-    body.dark .pill { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
-    body.dark .detail-dlbar { background: #1c1c1f; border-color: #27272a; color: #a1a1aa; }
-    body.dark .detail-dlbar select { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .ct-table th { background: #1f1f23; color: #a1a1aa; border-bottom-color: #27272a; }
+    body.dark .ct-table th:hover { background: #2a2a2e; }
+    body.dark .ct-table td { border-bottom-color: #27272a; }
+    body.dark .ct-table tr:hover td { background: #1c1c1f; }
+    body.dark .ct-pagination { background: #18181b; border-color: #27272a; }
     body.dark .pgbtns button { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
     body.dark .pgbtns button:hover { background: #3f3f46; }
-    body.dark .detail-table-wrap { background: #18181b; border-color: #27272a; }
-    body.dark .dtable th { background: #1f1f23; color: #a1a1aa; }
-    body.dark .dtable th:hover { background: #2a2a2e; }
-    body.dark .dtable td { border-bottom-color: #27272a; }
-    body.dark .dtable tr:hover td { background: #1c1c1f; }
+    body.dark .pill { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    body.dark .runs-table th { background: #1f1f23; color: #a1a1aa; border-bottom-color: #27272a; }
+    body.dark .runs-table td { border-bottom-color: #27272a; }
+    body.dark .runs-table tr:hover td { background: #1c1c1f; }
+    body.dark .login-progress { background: #1c2a3a; border-color: #1d4ed8; color: #93c5fd; }
+    body.dark .login-ok       { background: #14532d; border-color: #15803d; color: #86efac; }
+    body.dark .login-warn     { background: #451a03; border-color: #b45309; color: #fcd34d; }
+    body.dark .login-err      { background: #450a0a; border-color: #b91c1c; color: #fca5a5; }
+    body.dark .acc-actions { border-top-color: #27272a; }
+    body.dark .form-sep { border-top-color: #27272a; }
+    body.dark .acc-card-add { border-color: #3f3f46; color: #71717a; }
+    body.dark .acc-card-add:hover { border-color: #60a5fa; color: #60a5fa; }
 
     /* ── Header ── */
     .header { display: flex; align-items: center; justify-content: space-between; padding: .9rem 1.5rem; background: #fff; border-bottom: 1px solid #e2e2e4; position: sticky; top: 0; z-index: 100; }
@@ -47,100 +63,158 @@
     .btn-theme { width: 34px; height: 34px; border: none; border-radius: 8px; background: #f0f0f2; cursor: pointer; font-size: 1rem; }
 
     /* ── Container ── */
-    .wrap { max-width: 1000px; margin: 0 auto; padding: 1.5rem; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
 
     /* ── Auth ── */
     #auth-box { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px; padding: 1.5rem; max-width: 380px; margin-bottom: 1.5rem; }
     #auth-box label { display: block; margin-bottom: .5rem; font-weight: 500; }
     #auth-box input { display: block; width: 100%; padding: .55rem .75rem; border: 1px solid #ccc; border-radius: 8px; font-size: 1rem; margin-bottom: .5rem; }
-    .err { color: #c00; font-size: .9rem; margin-top: .35rem; }
+    .err-inline { color: #c00; font-size: .9rem; margin-top: .35rem; }
 
-    /* ── Card scrape ── */
-    .scrape-card { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1.75rem; }
-    .scrape-card h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: .4rem; }
-    .scrape-card p { font-size: .93rem; color: #555; margin-bottom: .9rem; }
-    .scrape-status { font-size: .9rem; color: #555; margin-top: .4rem; }
-    .scrape-status.err { color: #c00; }
+    /* ── Tabs ── */
+    .tabs { display: flex; border-bottom: 2px solid #e2e2e4; margin-bottom: 1.5rem; }
+    .tab-btn { padding: .65rem 1.1rem; border: none; background: none; cursor: pointer; font-size: .95rem; font-weight: 500; color: #666; border-bottom: 3px solid transparent; margin-bottom: -2px; transition: color .15s; }
+    .tab-btn.on { color: #0a66c2; border-bottom-color: #0a66c2; }
+    .tab-btn:hover { color: #0a66c2; }
+    .tab-panel { display: none; }
+    .tab-panel.on { display: block; }
 
-    /* ── Botones generales ── */
-    .btn { display: inline-block; padding: .48rem .9rem; border-radius: 7px; border: none; cursor: pointer; font-size: .88rem; font-weight: 500; }
-    .btn-blue { background: #0a66c2; color: #fff; }
-    .btn-blue:hover { background: #004182; }
+    /* ── Botones ── */
+    .btn { display: inline-flex; align-items: center; gap: .35rem; padding: .48rem .9rem; border-radius: 7px; border: none; cursor: pointer; font-size: .88rem; font-weight: 500; transition: background .15s; }
+    .btn-blue   { background: #0a66c2; color: #fff; }
+    .btn-blue:hover   { background: #004182; }
     .btn-blue:disabled { background: #888; cursor: not-allowed; }
     .btn-outline { background: #fff; border: 1px solid #ccc; color: #333; }
     .btn-outline:hover { background: #f0f0f2; }
-    .btn-green { background: #107c41; color: #fff; }
-    .btn-green:hover { background: #0b5e30; }
-    .btn-red { background: #c00; color: #fff; }
-    .btn-red:hover { background: #900; }
-    .btn-teal { background: #0d9488; color: #fff; }
-    .btn-teal:hover { background: #0f766e; }
+    .btn-green  { background: #107c41; color: #fff; }
+    .btn-green:hover  { background: #0b5e30; }
+    .btn-red    { background: #c00; color: #fff; }
+    .btn-red:hover    { background: #900; }
+    .btn-teal   { background: #0d9488; color: #fff; }
+    .btn-teal:hover   { background: #0f766e; }
+    .btn-amber  { background: #b45309; color: #fff; }
+    .btn-sm { padding: .32rem .65rem; font-size: .82rem; border-radius: 6px; }
+    .btn-ghost { background: none; border: none; cursor: pointer; color: #777; padding: .2rem .35rem; border-radius: 5px; font-size: .88rem; line-height: 1; }
+    .btn-ghost:hover { background: #f0f0f2; color: #111; }
+    body.dark .btn-ghost:hover { background: #27272a; color: #e4e4e7; }
 
-    /* ── Sección exportaciones ── */
-    #section-list { }
-    .list-head { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: .75rem; margin-bottom: .9rem; }
-    .list-head h2 { font-size: 1.15rem; font-weight: 600; }
-    .list-summary { font-size: .9rem; color: #666; margin-top: .15rem; }
+    /* ── Section head ── */
+    .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+    .section-head h2 { font-size: 1.1rem; font-weight: 600; }
 
-    .table-outer { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px; overflow: visible; }
-    .exports-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-    .exports-table th { background: #f5f5f7; font-weight: 600; color: #444; padding: .7rem 1rem; text-align: left; border-bottom: 1px solid #e2e2e4; }
-    .exports-table td { padding: .7rem 1rem; border-bottom: 1px solid #f0f0f2; vertical-align: middle; }
-    .exports-table tr:last-child td { border-bottom: none; }
-    .exports-table tr:hover td { background: #fafafa; }
-
-    .actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
-
-    /* ── Dropdown ── */
-    .dd-wrap { position: relative; display: inline-block; }
-    .dd-menu { display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: 130px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,.12); z-index: 200; padding: .25rem; }
-    .dd-wrap.open .dd-menu { display: block; }
-    .dd-menu a, .dd-menu button { display: block; width: 100%; text-align: left; padding: .5rem .75rem; border-radius: 6px; border: none; background: none; cursor: pointer; font-size: .9rem; color: #111; text-decoration: none; }
-    .dd-menu a:hover, .dd-menu button:hover { background: #f0f0f2; }
-
-    /* ── Vista detalle ── */
-    #section-detail { display: none; margin-top: 2rem; }
-    .detail-topbar { background: #0a66c2; color: #fff; padding: 1rem 1.25rem; border-radius: 12px 12px 0 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-    .detail-topbar h2 { font-size: 1.1rem; font-weight: 600; }
-    .detail-topbar .stats { font-size: .9rem; opacity: .9; margin-top: .25rem; }
-    .btn-ocultar { padding: .4rem .8rem; border-radius: 7px; border: 1px solid rgba(255,255,255,.55); background: transparent; color: #fff; cursor: pointer; font-size: .9rem; white-space: nowrap; }
-    .btn-ocultar:hover { background: rgba(255,255,255,.15); }
-
-    .detail-toolbar { background: #fff; border: 1px solid #e2e2e4; border-top: none; padding: .85rem 1.1rem; display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
-    .search-box { padding: .48rem .75rem; border: 1px solid #ccc; border-radius: 8px; font-size: .9rem; min-width: 200px; }
+    /* ── Pills ── */
     .pills { display: flex; gap: .35rem; flex-wrap: wrap; }
-    .pill { padding: .38rem .75rem; border-radius: 20px; border: 1px solid #ccc; background: #fff; color: #333; cursor: pointer; font-size: .85rem; }
+    .pill { padding: .35rem .7rem; border-radius: 20px; border: 1px solid #ccc; background: #fff; color: #333; cursor: pointer; font-size: .83rem; white-space: nowrap; }
     .pill:hover, .pill.on { background: #0a66c2; border-color: #0a66c2; color: #fff; }
-    .vtoggle { display: flex; }
-    .vtoggle button { padding: .38rem .7rem; border: 1px solid #ccc; background: #fff; cursor: pointer; font-size: .85rem; color: #333; }
-    .vtoggle button:first-child { border-radius: 7px 0 0 7px; }
-    .vtoggle button:last-child { border-radius: 0 7px 7px 0; border-left: none; }
-    .vtoggle button.on { background: #0a66c2; border-color: #0a66c2; color: #fff; }
 
-    .detail-dlbar { background: #fafafa; border: 1px solid #e2e2e4; border-top: none; padding: .65rem 1.1rem; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .88rem; color: #555; }
-    .detail-dlbar select { padding: .35rem .5rem; border-radius: 6px; border: 1px solid #ccc; font-size: .88rem; }
-    .pginfo { margin-left: auto; font-size: .88rem; color: #666; }
-    .pgbtns { display: flex; gap: .35rem; }
-    .pgbtns button { padding: .35rem .65rem; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; font-size: .85rem; }
+    /* ── Account cards ── */
+    .acc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .acc-card { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px; padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .7rem; transition: box-shadow .15s; }
+    .acc-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.08); }
+    .acc-top { display: flex; align-items: flex-start; gap: .65rem; }
+    .acc-avatar { width: 40px; height: 40px; border-radius: 50%; background: #0a66c2; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem; flex-shrink: 0; }
+    .acc-info { flex: 1; min-width: 0; }
+    .acc-name { font-weight: 600; font-size: .97rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .acc-slug { font-size: .8rem; color: #888; }
+    .acc-topbtns { display: flex; gap: .25rem; flex-shrink: 0; }
+    .acc-status { display: flex; align-items: center; gap: .4rem; font-size: .83rem; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot-green  { background: #16a34a; }
+    .dot-orange { background: #d97706; }
+    .dot-red    { background: #dc2626; }
+    .acc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; }
+    .stat-box { background: #f5f5f7; border-radius: 8px; padding: .5rem .4rem; text-align: center; }
+    .stat-val { font-size: 1.05rem; font-weight: 700; color: #0a66c2; line-height: 1.1; }
+    .stat-label { font-size: .72rem; color: #666; margin-top: .1rem; }
+    .acc-meta { font-size: .8rem; color: #777; display: flex; flex-direction: column; gap: .2rem; }
+    .acc-meta span { display: flex; align-items: center; gap: .3rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .acc-actions { display: flex; gap: .4rem; flex-wrap: wrap; padding-top: .5rem; border-top: 1px solid #f0f0f2; }
+    .acc-card-add { border: 2px dashed #ccc; background: transparent; cursor: pointer; justify-content: center; align-items: center; min-height: 170px; color: #888; font-size: .92rem; gap: .4rem; transition: border-color .15s, color .15s; }
+    .acc-card-add:hover { border-color: #0a66c2; color: #0a66c2; }
+
+        /* ── Contactos: filtros ── */
+    .filter-bar { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px 12px 0 0; padding: .9rem 1.1rem; display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+    .ct-search { padding: .48rem .75rem; border: 1px solid #ccc; border-radius: 8px; font-size: .9rem; min-width: 220px; flex: 1; max-width: 360px; }
+    body.dark .ct-search { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    .ct-account-sel { padding: .46rem .65rem; border: 1px solid #ccc; border-radius: 8px; font-size: .88rem; background: #fff; color: #111; }
+    body.dark .ct-account-sel { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+
+    /* ── Contactos: barra de stats + descarga ── */
+    .ct-stat-bar { background: #fafafa; border: 1px solid #e2e2e4; border-top: none; padding: .6rem 1.1rem; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .88rem; color: #555; }
+    .ct-stats-text { font-weight: 500; }
+    .ct-dl-group { display: flex; gap: .35rem; margin-left: auto; }
+
+    /* ── Banner de run ── */
+    .run-banner { background: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8; border-radius: 0; padding: .55rem 1.1rem; font-size: .88rem; display: flex; align-items: center; gap: .75rem; }
+    .run-banner button { background: none; border: none; cursor: pointer; color: inherit; font-size: .85rem; text-decoration: underline; padding: 0; }
+
+    /* ── Contactos: tabla ── */
+    .table-outer { background: #fff; border: 1px solid #e2e2e4; border-top: none; overflow-x: auto; }
+    .ct-table { width: 100%; border-collapse: collapse; font-size: .87rem; }
+    .ct-table th { background: #f5f5f7; font-weight: 600; color: #444; padding: .6rem .9rem; text-align: left; border-bottom: 1px solid #e2e2e4; white-space: nowrap; cursor: pointer; user-select: none; position: sticky; top: 0; }
+    .ct-table th:hover { background: #ececee; }
+    .ct-table th .sort-arrow { opacity: .35; }
+    .ct-table th.sorted .sort-arrow { opacity: 1; }
+    .ct-table td { padding: .55rem .9rem; border-bottom: 1px solid #f0f0f2; vertical-align: top; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ct-table tr:last-child td { border-bottom: none; }
+    .ct-table tr:hover td { background: #fafafa; }
+    .no-rows { padding: 2rem; text-align: center; color: #888; font-style: italic; }
+
+    /* ── Contactos: paginación ── */
+    .ct-pagination { background: #fff; border: 1px solid #e2e2e4; border-top: none; border-radius: 0 0 12px 12px; padding: .65rem 1.1rem; display: flex; align-items: center; gap: .5rem; font-size: .88rem; color: #555; }
+    .ct-pagination select { padding: .32rem .5rem; border-radius: 6px; border: 1px solid #ccc; font-size: .85rem; }
+    body.dark .ct-pagination { background: #18181b; border-color: #27272a; color: #a1a1aa; }
+    body.dark .ct-pagination select { background: #27272a; border-color: #3f3f46; color: #e4e4e7; }
+    .pgbtns { display: flex; gap: .3rem; }
+    .pgbtns button { padding: .32rem .6rem; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; font-size: .85rem; }
     .pgbtns button:hover { background: #f0f0f2; }
-    .pgbtns button:disabled { opacity: .4; cursor: not-allowed; }
+    .pgbtns button:disabled { opacity: .35; cursor: not-allowed; }
 
-    .detail-table-wrap { overflow-x: auto; border: 1px solid #e2e2e4; border-top: none; border-radius: 0 0 12px 12px; max-height: 62vh; background: #fff; }
-    .dtable { width: 100%; border-collapse: collapse; font-size: .88rem; }
-    .dtable th { background: #f5f5f7; font-weight: 600; color: #444; padding: .6rem .85rem; text-align: left; border-bottom: 1px solid #e2e2e4; position: sticky; top: 0; white-space: nowrap; cursor: pointer; user-select: none; }
-    .dtable th:hover { background: #ececee; }
-    .dtable td { padding: .58rem .85rem; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
-    .dtable tr:last-child td { border-bottom: none; }
-    .dtable tr:hover td { background: #fafafa; }
-    .no-rows { padding: 2rem; text-align: center; color: #888; }
+    /* ── Historial ── */
+    .runs-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    .runs-table th { background: #f5f5f7; font-weight: 600; color: #444; padding: .7rem 1rem; text-align: left; border-bottom: 1px solid #e2e2e4; }
+    .runs-table td { padding: .65rem 1rem; border-bottom: 1px solid #f0f0f2; vertical-align: middle; }
+    .runs-table tr:last-child td { border-bottom: none; }
+    .runs-table tr:hover td { background: #fafafa; }
+    .badge { display: inline-block; padding: .18rem .55rem; border-radius: 20px; font-size: .78rem; font-weight: 600; }
+    .badge-blue  { background: #dbeafe; color: #1d4ed8; }
+    .badge-green { background: #dcfce7; color: #15803d; }
+    body.dark .badge-blue  { background: #1e3a5f; color: #93c5fd; }
+    body.dark .badge-green { background: #14532d; color: #86efac; }
+    .runs-table-wrap { background: #fff; border: 1px solid #e2e2e4; border-radius: 12px; overflow: hidden; }
+    body.dark .runs-table-wrap { background: #18181b; border-color: #27272a; }
 
-    .empty-msg { text-align: center; padding: 2rem; color: #888; font-style: italic; }
+    /* ── Modal ── */
+    .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 500; align-items: center; justify-content: center; padding: 1rem; }
+    .modal-backdrop.open { display: flex; }
+    .modal { background: #fff; border-radius: 14px; width: 100%; max-width: 480px; padding: 1.75rem; box-shadow: 0 20px 50px rgba(0,0,0,.18); position: relative; }
+    .modal h3 { font-size: 1.15rem; font-weight: 700; margin-bottom: 1.3rem; padding-right: 1.5rem; }
+    .modal-close { position: absolute; top: 1.2rem; right: 1.25rem; background: none; border: none; font-size: 1.4rem; cursor: pointer; color: #888; line-height: 1; }
+    .modal-close:hover { color: #111; }
+    .form-group { margin-bottom: 1rem; }
+    .form-label { display: block; font-size: .88rem; font-weight: 500; margin-bottom: .35rem; }
+    .req { color: #c00; }
+    .form-input { display: block; width: 100%; padding: .55rem .75rem; border: 1px solid #ccc; border-radius: 8px; font-size: .95rem; background: #fff; color: #111; transition: border-color .15s; }
+    .form-input:focus { outline: none; border-color: #0a66c2; box-shadow: 0 0 0 3px rgba(10,102,194,.12); }
+    .form-hint { font-size: .79rem; color: #888; margin-top: .25rem; line-height: 1.4; }
+    .form-sep { border: none; border-top: 1px solid #e2e2e4; margin: 1.1rem 0; }
+    .modal-actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1.5rem; }
+    .login-banner { display: none; padding: .7rem .9rem; border-radius: 8px; font-size: .87rem; margin-top: .9rem; border: 1px solid; line-height: 1.5; }
+    .login-banner.show { display: flex; align-items: flex-start; gap: .5rem; }
+    .login-progress { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+    .login-ok       { background: #f0fdf4; border-color: #bbf7d0; color: #15803d; }
+    .login-warn     { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+    .login-err      { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+
+    /* ── Spinner ── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { width: 14px; height: 14px; border: 2px solid rgba(29,78,216,.25); border-top-color: #1d4ed8; border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; margin-top: 1px; }
   </style>
 </head>
 <body>
 
 <header class="header">
-  <h1>Contactos de LinkedIn</h1>
+  <h1>LinkedIn Scraper</h1>
   <button class="btn-theme" id="btn-theme">🌙</button>
 </header>
 
@@ -151,86 +225,141 @@
     <label for="pw-input">Contraseña de acceso</label>
     <input type="password" id="pw-input" placeholder="Introduce la contraseña">
     <button class="btn btn-blue" id="btn-login">Entrar</button>
-    <p class="err" id="auth-err" style="display:none"></p>
+    <p class="err-inline" id="auth-err" style="display:none"></p>
   </div>
 
-  <!-- Contenido principal -->
   <div id="main" style="display:none">
 
-    <!-- Card scrape -->
-    <div class="scrape-card">
-      <h2>Scrapear mis contactos</h2>
-      <p>Inicia la exportación de tus contactos de LinkedIn. Se abrirá Chrome en una ventana. Si LinkedIn te ha limitado por demasiadas peticiones, espera antes de usar este botón.</p>
-      <button class="btn btn-blue" id="btn-scrape">Iniciar con mi sesión</button>
-      <p class="scrape-status" id="scrape-status"></p>
+    <!-- Tabs -->
+    <nav class="tabs">
+      <button class="tab-btn on" data-tab="tab-cuentas">Cuentas</button>
+      <button class="tab-btn"   data-tab="tab-contactos">Contactos</button>
+      <button class="tab-btn"   data-tab="tab-historial">Historial</button>
+    </nav>
+
+    <!-- ══════════════════════════════════════════════════
+         TAB: CUENTAS
+    ══════════════════════════════════════════════════ -->
+    <div class="tab-panel on" id="tab-cuentas">
+      <div class="section-head">
+        <h2>Cuentas de LinkedIn</h2>
+        <button class="btn btn-blue" id="btn-nueva-cuenta">+ Nueva cuenta</button>
+      </div>
+      <div class="acc-grid" id="acc-grid">
+        <p style="color:#888;font-size:.9rem">Cargando…</p>
+      </div>
     </div>
 
-    <!-- Lista de exportaciones -->
-    <div id="section-list">
-      <div class="list-head">
-        <div>
-          <h2>Tus exportaciones</h2>
-          <p class="list-summary" id="list-summary">Cargando…</p>
+    <!-- ══════════════════════════════════════════════════
+         TAB: CONTACTOS
+    ══════════════════════════════════════════════════ -->
+    <div class="tab-panel" id="tab-contactos">
+
+      <!-- Barra de filtros -->
+      <div class="filter-bar">
+        <select class="ct-account-sel" id="ct-account" title="Seleccionar cuenta">
+          <option value="">Cargando cuentas…</option>
+        </select>
+        <input type="search" class="ct-search" id="ct-search"
+               placeholder="Buscar por nombre, empresa, cargo…">
+        <div class="pills" id="ct-pills">
+          <button class="pill on" data-cf="all">Todos</button>
+          <button class="pill"    data-cf="email">Con email</button>
+          <button class="pill"    data-cf="phone">Con teléfono</button>
+          <button class="pill"    data-cf="email_phone">Email + Tel</button>
         </div>
-        <button class="btn btn-outline" id="btn-refresh">Actualizar lista</button>
       </div>
-      <div class="table-outer">
-        <table class="exports-table">
-          <thead>
-            <tr>
-              <th>FECHA</th>
-              <th>NOMBRE</th>
-              <th>CONTACTOS</th>
-              <th>ACCIONES</th>
-            </tr>
-          </thead>
-          <tbody id="list-tbody"></tbody>
+
+      <!-- Barra de stats + descarga -->
+      <div class="ct-stat-bar">
+        <span class="ct-stats-text" id="ct-stats">—</span>
+        <div class="ct-dl-group">
+          <label style="font-size:.82rem;font-weight:500;white-space:nowrap">Filas:</label>
+          <select id="ct-dl-limit" title="Número de filas a exportar">
+            <option value="100">100</option>
+            <option value="500">500</option>
+            <option value="1000">1.000</option>
+            <option value="5000">5.000</option>
+            <option value="0" selected>Todas</option>
+          </select>
+          <label style="font-size:.82rem;font-weight:500;white-space:nowrap">Formato:</label>
+          <select id="ct-dl-crm" title="Formato de columnas en el archivo exportado">
+            <option value="full">Completo (ES)</option>
+            <option value="hubspot">HubSpot</option>
+            <option value="salesforce">Salesforce</option>
+          </select>
+          <button class="btn btn-green btn-sm" id="ct-dl-csv"
+            title="CSV streaming: descarga todos los contactos filtrados sin límite de filas">↓ CSV</button>
+          <button class="btn btn-teal  btn-sm" id="ct-dl-xlsx"
+            title="Excel: hasta 100.000 filas en memoria">↓ Excel</button>
+          <button class="btn btn-red   btn-sm" id="ct-dl-pdf"
+            title="PDF de la página visible (solo lo que ves en pantalla)">↓ PDF pág.</button>
+        </div>
+      </div>
+
+      <!-- Banner de run activo -->
+      <div class="run-banner" id="ct-run-banner" style="display:none">
+        Mostrando contactos del run del <strong id="ct-run-label">—</strong>
+        <button id="ct-clear-run">× Quitar filtro de run</button>
+      </div>
+
+      <!-- Tabla -->
+      <div class="table-outer" style="max-height:62vh;overflow-y:auto">
+        <table class="ct-table" id="ct-table">
+          <thead id="ct-thead"></thead>
+          <tbody id="ct-tbody">
+            <tr><td class="no-rows" colspan="8">Selecciona una cuenta para ver sus contactos.</td></tr>
+          </tbody>
         </table>
       </div>
-      <p id="list-empty" style="display:none;text-align:center;padding:2rem;color:#888;font-style:italic">Aún no hay exportaciones.</p>
+
+      <!-- Paginación -->
+      <div class="ct-pagination">
+        Mostrar
+        <select id="ct-per-page">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+        </select>
+        por página
+        <div class="pgbtns" style="margin-left:.5rem">
+          <button id="ct-prev" disabled>◀</button>
+          <button id="ct-next" disabled>▶</button>
+        </div>
+        <span id="ct-page-info" style="margin-left:.5rem;color:#888">—</span>
+      </div>
+
     </div>
 
-    <!-- Detalle exportación -->
-    <div id="section-detail">
-      <div class="detail-topbar">
-        <div>
-          <h2 id="detail-title">—</h2>
-          <p class="stats" id="detail-stats">—</p>
+    <!-- ══════════════════════════════════════════════════
+         TAB: HISTORIAL
+    ══════════════════════════════════════════════════ -->
+    <div class="tab-panel" id="tab-historial">
+      <div class="section-head">
+        <h2>Historial de ejecuciones</h2>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <label style="font-size:.85rem;font-weight:500">Período:</label>
+          <select id="runs-days" class="ct-account-sel">
+            <option value="7">Última semana</option>
+            <option value="30" selected>Último mes</option>
+            <option value="90">Últimos 3 meses</option>
+            <option value="0">Todo el historial</option>
+          </select>
+          <button class="btn btn-outline btn-sm" id="btn-runs-refresh">Actualizar</button>
         </div>
-        <button class="btn-ocultar" id="btn-ocultar">Ocultar</button>
       </div>
-      <div class="detail-toolbar">
-        <input type="search" class="search-box" id="det-search" placeholder="Buscar por nombre, empresa…">
-        <div class="pills" id="pills">
-          <button class="pill on" data-f="all">Todos</button>
-          <button class="pill" data-f="email">Con email</button>
-          <button class="pill" data-f="no-email">Sin email</button>
-          <button class="pill" data-f="company">Por empresa</button>
-        </div>
-      </div>
-      <div class="detail-dlbar">
-        <span>Descargar:</span>
-        <select id="dl-scope">
-          <option value="all">Todo</option>
-          <option value="email">Solo email</option>
-          <option value="phone">Solo teléfono</option>
-          <option value="email-phone">Email y teléfono</option>
-        </select>
-        <button class="btn btn-green" id="btn-xl">Excel</button>
-        <button class="btn btn-red" id="btn-pdf">PDF</button>
-        <button class="btn btn-teal" id="btn-csv">CSV</button>
-        <span style="margin-left:auto;display:flex;align-items:center;gap:.5rem">
-          Mostrar
-          <select id="pg-size"><option>10</option><option selected>25</option><option>50</option></select>
-          <div class="pgbtns"><button id="pg-prev">◀</button><button id="pg-next">▶</button></div>
-          <span class="pginfo" id="pg-info">—</span>
-        </span>
-      </div>
-      <!-- Tabla -->
-      <div class="detail-table-wrap" id="det-table-wrap">
-        <table class="dtable" id="det-table">
-          <thead id="det-thead"></thead>
-          <tbody id="det-tbody"></tbody>
+      <p id="runs-summary" style="font-size:.85rem;color:#888;margin-bottom:.75rem"></p>
+      <div class="runs-table-wrap">
+        <table class="runs-table">
+          <thead>
+            <tr>
+              <th>CUENTA</th><th>INICIO</th><th>FIN</th>
+              <th>SCRAPEADOS</th><th>NUEVOS</th><th>ACTUALIZADOS</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="runs-tbody">
+            <tr><td colspan="7" class="no-rows">Cargando…</td></tr>
+          </tbody>
         </table>
       </div>
     </div>
@@ -238,469 +367,705 @@
   </div><!-- /main -->
 </div><!-- /wrap -->
 
+<!-- ══════ MODAL: Nueva cuenta ══════ -->
+<div class="modal-backdrop" id="modal-cuenta">
+  <div class="modal">
+    <button class="modal-close" id="modal-close">×</button>
+    <h3>Añadir cuenta de LinkedIn</h3>
+    <div class="form-group">
+      <label class="form-label">Slug de LinkedIn <span style="color:#888;font-weight:400">(opcional)</span></label>
+      <input type="text" class="form-input" id="f-username" placeholder="miquel-roca-mascaros" autocomplete="off">
+      <p class="form-hint">Parte final de tu URL: linkedin.com/in/<strong>tu-slug</strong><br>Si lo dejas vacío se detecta automáticamente.</p>
+    </div>
+    <hr class="form-sep">
+    <div class="form-group">
+      <label class="form-label">Email <span class="req">*</span></label>
+      <input type="email" class="form-input" id="f-email" placeholder="correo@ejemplo.com" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Contraseña <span class="req">*</span></label>
+      <input type="password" class="form-input" id="f-password" placeholder="Tu contraseña de LinkedIn" autocomplete="new-password">
+      <p class="form-hint">Solo se usa para el login. No se guarda en la base de datos.</p>
+    </div>
+    <hr class="form-sep">
+    <div class="form-group">
+      <label class="form-label">Proxy <span style="color:#888;font-weight:400">(opcional)</span></label>
+      <input type="text" class="form-input" id="f-proxy" placeholder="usuario:contraseña@ip:puerto" autocomplete="off">
+      <p class="form-hint">Formato: <code>host:puerto</code> sin auth, o <code>user:pass@host:puerto</code> con auth.</p>
+    </div>
+    <div id="modal-msg-cuenta" class="login-banner"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" id="modal-cancel">Cancelar</button>
+      <button class="btn btn-blue"    id="modal-save">Iniciar sesión</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ MODAL: Editar proxy ══════ -->
+<div class="modal-backdrop" id="modal-proxy">
+  <div class="modal" style="max-width:400px">
+    <button class="modal-close" id="modal-proxy-close">×</button>
+    <h3>Editar proxy</h3>
+    <p style="font-size:.9rem;color:#666;margin-bottom:1rem" id="proxy-account-label">—</p>
+    <div class="form-group">
+      <label class="form-label">Proxy</label>
+      <input type="text" class="form-input" id="f-proxy-edit" placeholder="usuario:contraseña@ip:puerto">
+      <p class="form-hint">Déjalo vacío para eliminar el proxy actual.</p>
+    </div>
+    <div id="modal-msg-proxy" class="login-banner"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" id="modal-proxy-cancel">Cancelar</button>
+      <button class="btn btn-blue"    id="modal-proxy-save">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ MODAL: Confirmar eliminar ══════ -->
+<div class="modal-backdrop" id="modal-confirm">
+  <div class="modal" style="max-width:380px">
+    <h3>¿Eliminar cuenta?</h3>
+    <p style="margin:.75rem 0 1.25rem;font-size:.93rem;color:#555" id="confirm-text">—</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" id="confirm-cancel">Cancelar</button>
+      <button class="btn btn-red"     id="confirm-ok">Eliminar</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script>
-/* ── Estado global ── */
-const S = {
-  token: sessionStorage.getItem('vlk_token') || '',
-  allData:   [],   // todos los registros del archivo abierto
-  filtered:  [],   // tras filtro+búsqueda
-  fileName:  '',
-  sortCol:   '',
-  sortDir:   1,
-  filter:    'all',
-  page:      1,
-  pageSize:  25,
-};
+/* ══════════════════════════════════════════════════════════════
+   Helpers globales
+══════════════════════════════════════════════════════════════ */
+const S = { token: sessionStorage.getItem('vlk_token') || '' };
+let _confirmCallback = null;
+let _proxyUsername   = null;
+let _loginPollers    = {};
 
-/* ── Helpers DOM ── */
-const $  = id => document.getElementById(id);
-const esc = s => { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; };
+const $   = id => document.getElementById(id);
+const esc = s  => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
 
-function hdrs() {
-  const h = { 'Accept': 'application/json' };
-  if (S.token) h['Authorization'] = 'Bearer ' + S.token;
+function hdrs(json = false) {
+  const h = { Accept: 'application/json' };
+  if (S.token) h.Authorization = 'Bearer ' + S.token;
+  if (json)    h['Content-Type'] = 'application/json';
   return h;
 }
 
-/* ── Auth ── */
-async function tryAuth(tok) {
-  const r = await fetch('/api/files', { headers: { 'Accept':'application/json', 'Authorization':'Bearer '+tok } });
-  return r.status !== 401;
+function fmtNum(n) {
+  if (n == null) return '—';
+  if (n >= 1000) return (n / 1000).toFixed(1).replace('.0', '') + 'k';
+  return String(n);
 }
 
+function timeAgo(iso) {
+  if (!iso) return 'nunca';
+  const diff = (Date.now() - new Date(iso)) / 1000;
+  if (diff < 60)    return 'hace un momento';
+  if (diff < 3600)  return `hace ${Math.floor(diff/60)} min`;
+  if (diff < 86400) return `hace ${Math.floor(diff/3600)} h`;
+  return `hace ${Math.floor(diff/86400)} días`;
+}
+
+function dtLocal(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function dtLocalDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('es-ES');
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Auth
+══════════════════════════════════════════════════════════════ */
+async function tryAuth(tok) {
+  const r = await fetch('/api/accounts', { headers: { Accept: 'application/json', Authorization: 'Bearer ' + tok } });
+  return r.status !== 401;
+}
 document.addEventListener('DOMContentLoaded', async () => {
   const ok = await tryAuth(S.token);
-  if (ok) { showMain(); }
-  else   { $('auth-box').style.display = 'block'; }
+  if (ok) showMain(); else $('auth-box').style.display = 'block';
 });
-
 $('btn-login').onclick = async () => {
   const tok = $('pw-input').value.trim();
-  const ok  = await tryAuth(tok);
-  if (!ok) { $('auth-err').textContent='Contraseña incorrecta'; $('auth-err').style.display='block'; return; }
-  S.token = tok;
-  sessionStorage.setItem('vlk_token', tok);
-  $('auth-box').style.display = 'none';
-  showMain();
+  if (!await tryAuth(tok)) { $('auth-err').textContent = 'Contraseña incorrecta'; $('auth-err').style.display = 'block'; return; }
+  S.token = tok; sessionStorage.setItem('vlk_token', tok);
+  $('auth-box').style.display = 'none'; showMain();
 };
 
-/* ── Inicializar pantalla principal ── */
 function showMain() {
   $('main').style.display = 'block';
-  loadScrapeStatus();
-  loadList();
+  loadAccounts();
+  loadRuns();
 }
 
 /* ── Tema ── */
-function applyTheme(dark) {
-  document.body.classList.toggle('dark', dark);
-  $('btn-theme').textContent = dark ? '☀️' : '🌙';
-  $('btn-theme').title = dark ? 'Modo claro' : 'Modo oscuro';
-}
-// Restaurar preferencia guardada
+function applyTheme(dark) { document.body.classList.toggle('dark', dark); $('btn-theme').textContent = dark ? '☀️' : '🌙'; }
 applyTheme(localStorage.getItem('vlk_dark') === '1');
+$('btn-theme').onclick = () => { const d = !document.body.classList.contains('dark'); applyTheme(d); localStorage.setItem('vlk_dark', d ? '1' : '0'); };
 
-$('btn-theme').onclick = () => {
-  const isDark = !document.body.classList.contains('dark');
-  applyTheme(isDark);
-  localStorage.setItem('vlk_dark', isDark ? '1' : '0');
-};
-
-/* ── Scrape ── */
-function loadScrapeStatus() {
-  fetch('/api/trigger-status', { headers: hdrs() })
-    .then(r=>r.json())
-    .then(d => {
-      if (d.error) return;
-      $('btn-scrape').disabled = !!d.running;
-      let msg = d.running ? 'Scrape en ejecución…' : (d.last_error||'');
-      if (d.last_error && /session|outdated|cookies have expired/i.test(d.last_error))
-        msg = 'Sesión de LinkedIn caducada. Borra session.pkl y ejecuta python main.py en tu PC.';
-      $('scrape-status').textContent = msg;
-      $('scrape-status').className = 'scrape-status' + (d.last_error ? ' err' : '');
-    }).catch(()=>{});
-}
-
-$('btn-scrape').onclick = async () => {
-  $('btn-scrape').disabled = true;
-  $('scrape-status').textContent = 'Iniciando…';
-  const r    = await fetch('/api/trigger-scrape', { method:'POST', headers: hdrs() });
-  const data = await r.json();
-  if (r.status === 409) { $('scrape-status').textContent = 'Ya hay un scrape en ejecución.'; return; }
-  if (data.error)       { $('scrape-status').textContent = data.error; $('scrape-status').classList.add('err'); $('btn-scrape').disabled=false; return; }
-  $('scrape-status').textContent = 'Scrape iniciado. Actualiza la lista en unos minutos.';
-  setInterval(loadScrapeStatus, 4000);
-};
-
-/* ── Cargar lista ── */
-$('btn-refresh').onclick = loadList;
-
-function friendlyName(fn) {
-  const m = fn.match(/^(?:perfil|conexiones|sugeridos)_(.+)_\d{8}_\d{4}\.csv$/i);
-  return m ? m[1].replace(/-/g,' ') : fn;
-}
-
-async function loadList() {
-  const r    = await fetch('/api/files', { headers: hdrs() });
-  const list = await r.json();
-  const tbody = $('list-tbody');
-  tbody.innerHTML = '';
-
-  if (!Array.isArray(list) || list.length === 0) {
-    $('list-summary').textContent = '0 exportación(es), 0 contacto(s) en total.';
-    $('list-empty').style.display = 'block';
-    return;
-  }
-  $('list-empty').style.display = 'none';
-  const total = list.reduce((s,f) => s+(f.rows||0), 0);
-  $('list-summary').textContent = `${list.length} exportación(es), ${total} contacto(s) en total.`;
-
-  list.forEach(f => {
-    const tr  = document.createElement('tr');
-    const dt  = f.mtime ? new Date(f.mtime*1000).toLocaleString('es-ES',{dateStyle:'short',timeStyle:'short'}) : '—';
-    const nm  = friendlyName(f.name);
-    const q   = S.token ? '&token='+encodeURIComponent(S.token) : '';
-
-    tr.innerHTML = `
-      <td>${esc(dt)}</td>
-      <td>${esc(nm)}</td>
-      <td>${f.rows!=null ? f.rows : '—'}</td>
-      <td class="actions">
-        <button class="btn btn-outline btn-ver">Ver esta exportación</button>
-        <div class="dd-wrap">
-          <button class="btn btn-blue btn-dd">Descargar ▾</button>
-          <div class="dd-menu">
-            <a href="/api/files/${encodeURIComponent(f.name)}?format=csv${q}" download>CSV</a>
-            <a href="/api/files/${encodeURIComponent(f.name)}?format=xlsx${q}" download>Excel</a>
-            <button class="btn-pdf-row">PDF</button>
-          </div>
-        </div>
-      </td>
-    `;
-
-    /* Botón Ver */
-    tr.querySelector('.btn-ver').addEventListener('click', () => openDetail(f.name));
-
-    /* Dropdown */
-    const ddWrap = tr.querySelector('.dd-wrap');
-    tr.querySelector('.btn-dd').addEventListener('click', e => {
-      e.stopPropagation();
-      closeAllDD();
-      ddWrap.classList.toggle('open');
-    });
-    tr.querySelector('.btn-pdf-row').addEventListener('click', () => {
-      ddWrap.classList.remove('open');
-      downloadPdfForFile(f.name);
-    });
-
-    tbody.appendChild(tr);
-  });
-}
-
-/* Cierra todos los dropdowns */
-function closeAllDD() {
-  document.querySelectorAll('.dd-wrap.open').forEach(el => el.classList.remove('open'));
-}
-document.addEventListener('click', e => {
-  if (!e.target.closest('.dd-wrap')) closeAllDD();
+/* ── Tabs ── */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('on'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('on'));
+    btn.classList.add('on');
+    $(btn.dataset.tab).classList.add('on');
+    if (btn.dataset.tab === 'tab-historial') loadRuns();
+    if (btn.dataset.tab === 'tab-contactos') {
+      if ($('ct-account').value) {
+        loadContacts();
+      } else {
+        populateAccountSelector().then(() => {
+          if ($('ct-account').value) loadContacts();
+        });
+      }
+    }
+  };
 });
 
-/* ── Abrir detalle de un archivo ── */
-async function openDetail(fileName) {
-  /* Mostrar la sección de detalle debajo (sin ocultar nada) y hacer scroll */
-  $('detail-title').textContent = 'Cargando ' + friendlyName(fileName) + '…';
-  $('detail-stats').textContent = '';
-  $('det-thead').innerHTML = '';
-  $('det-tbody').innerHTML = '<tr><td class="no-rows">Cargando datos…</td></tr>';
-  $('section-detail').style.display = 'block';
-  $('section-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-  let data;
+/* ══════════════════════════════════════════════════════════════
+   CUENTAS
+══════════════════════════════════════════════════════════════ */
+async function loadAccounts() {
   try {
-    const r = await fetch('/api/files/' + encodeURIComponent(fileName) + '?format=json', { headers: hdrs() });
-    if (!r.ok) { throw new Error('HTTP ' + r.status); }
-    data = await r.json();
+    const r = await fetch('/api/accounts', { headers: hdrs() });
+    const list = await r.json();
+    renderAccounts(Array.isArray(list) ? list : []);
+    populateAccountSelector(Array.isArray(list) ? list : []);
+  } catch {
+    $('acc-grid').innerHTML = '<p style="color:#c00;font-size:.9rem">Error al cargar cuentas.</p>';
+  }
+}
+
+function sessionDot(acc) {
+  if (!acc.session_exists) return ['dot-red',    'Sin sesión — necesita login'];
+  const d = acc.session_age_days;
+  if (d != null && d > 60) return ['dot-orange', `Sesión antigua (${d}d) — renueva pronto`];
+  return ['dot-green', `Sesión activa${d != null ? ` · ${d}d` : ''}`];
+}
+
+function initials(name) {
+  return (name || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+}
+
+function renderAccounts(accounts) {
+  const grid = $('acc-grid');
+  let html = '';
+  for (const acc of accounts) {
+    const [dotClass, dotTitle] = sessionDot(acc);
+    html += `
+    <div class="acc-card">
+      <div class="acc-top">
+        <div class="acc-avatar">${esc(initials(acc.display_name || acc.username))}</div>
+        <div class="acc-info">
+          <div class="acc-name">${esc(acc.display_name || acc.username)}</div>
+          <div class="acc-slug">@${esc(acc.username)}</div>
+        </div>
+        <div class="acc-topbtns">
+          <button class="btn-ghost" title="Editar proxy" data-edit-proxy="${esc(acc.username)}" data-current-proxy="${esc(acc.proxy||'')}">✏️</button>
+          <button class="btn-ghost" title="Eliminar cuenta" data-del="${esc(acc.username)}">🗑</button>
+        </div>
+      </div>
+      <div class="acc-status">
+        <span class="dot ${dotClass}" title="${esc(dotTitle)}"></span>
+        <span>${esc(dotTitle)}</span>
+      </div>
+      <div class="acc-stats">
+        <div class="stat-box" title="Perfiles pendientes en la cola">
+          <div class="stat-val">${fmtNum(acc.queue_pending)}</div>
+          <div class="stat-label">Pendientes</div>
+        </div>
+        <div class="stat-box" title="Perfiles ya enriquecidos">
+          <div class="stat-val">${fmtNum(acc.queue_done)}</div>
+          <div class="stat-label">Procesados</div>
+        </div>
+        <div class="stat-box" title="Contactos únicos en la base de datos">
+          <div class="stat-val">${fmtNum(acc.contacts_total)}</div>
+          <div class="stat-label">Guardados</div>
+        </div>
+      </div>
+      <div class="acc-meta">
+        <span title="Último run">🕐 ${esc(timeAgo(acc.last_run_at))}</span>
+        ${acc.proxy ? `<span title="Proxy">🔗 ${esc(acc.proxy)}</span>` : '<span style="color:#aaa">Sin proxy</span>'}
+      </div>
+      <div class="acc-actions">
+        <button class="btn btn-outline btn-sm" data-action="index"  data-acc="${esc(acc.username)}"
+          title="Recorre tus conexiones y actualiza la cola (máx. 1 vez/hora)">🗂 Actualizar lista</button>
+        <button class="btn btn-blue   btn-sm" data-action="enrich" data-acc="${esc(acc.username)}"
+          title="Visita los perfiles pendientes y extrae datos (máx. 1 vez/20 min)">▶ Scrapear perfiles</button>
+        <button class="btn btn-teal   btn-sm" data-view-contacts="${esc(acc.username)}"
+          title="Ver contactos en la base de datos">📋 Ver contactos</button>
+      </div>
+    </div>`;
+  }
+  html += `<button class="acc-card acc-card-add" id="btn-add-card">
+    <span style="font-size:1.6rem;line-height:1">＋</span><span>Añadir cuenta</span>
+  </button>`;
+  grid.innerHTML = html;
+
+  grid.querySelectorAll('[data-del]').forEach(b =>
+    b.onclick = e => { e.stopPropagation(); confirmDelete(b.dataset.del); });
+  grid.querySelectorAll('[data-edit-proxy]').forEach(b =>
+    b.onclick = e => { e.stopPropagation(); openProxyModal(b.dataset.editProxy, b.dataset.currentProxy); });
+  grid.querySelectorAll('[data-action]').forEach(b =>
+    b.onclick = () => triggerScrape(b.dataset.action, b.dataset.acc, b));
+  grid.querySelectorAll('[data-view-contacts]').forEach(b =>
+    b.onclick = () => goToContacts(b.dataset.viewContacts));
+  $('btn-add-card').onclick = openAccountModal;
+}
+
+function populateAccountSelector(accounts) {
+  if (!accounts) {
+    return fetch('/api/accounts', { headers: hdrs() }).then(r => r.json()).then(list => {
+      populateAccountSelector(Array.isArray(list) ? list : []);
+    });
+  }
+  const sel = $('ct-account');
+  const prev = sel.value;
+  sel.innerHTML = accounts.length === 0
+    ? '<option value="">Sin cuentas registradas</option>'
+    : accounts.map(a => `<option value="${esc(a.username)}">${esc(a.display_name || a.username)}</option>`).join('');
+  if (prev && accounts.some(a => a.username === prev)) sel.value = prev;
+}
+
+/* ── Abrir tab contactos filtrando por cuenta ── */
+function goToContacts(username, runFrom, runTo, runLabel) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('on'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('on'));
+  document.querySelector('[data-tab="tab-contactos"]').classList.add('on');
+  $('tab-contactos').classList.add('on');
+
+  CT.page = 1;
+  if (username) $('ct-account').value = username;
+  if (runFrom) {
+    CT.runFrom = runFrom; CT.runTo = runTo;
+    $('ct-run-label').textContent = runLabel || dtLocal(runFrom);
+    $('ct-run-banner').style.display = 'flex';
+  }
+  loadContacts();
+}
+
+/* ══════════════════════════════════════════════════════════════
+   MODAL: Nueva cuenta
+══════════════════════════════════════════════════════════════ */
+$('btn-nueva-cuenta').onclick = openAccountModal;
+
+function openAccountModal() {
+  ['f-username','f-email','f-password','f-proxy'].forEach(id => $(id).value = '');
+  setBanner('modal-msg-cuenta', '', '');
+  $('modal-save').disabled = false; $('modal-save').textContent = 'Iniciar sesión';
+  $('modal-cuenta').classList.add('open');
+  setTimeout(() => $('f-email').focus(), 80);
+}
+function closeAccountModal() { $('modal-cuenta').classList.remove('open'); }
+$('modal-close').onclick = closeAccountModal;
+$('modal-cancel').onclick = closeAccountModal;
+$('modal-cuenta').onclick = e => { if (e.target === $('modal-cuenta')) closeAccountModal(); };
+
+$('modal-save').onclick = async () => {
+  const username = $('f-username').value.trim();
+  const email    = $('f-email').value.trim();
+  const password = $('f-password').value;
+  const proxy    = $('f-proxy').value.trim();
+  if (!email)    { setBanner('modal-msg-cuenta', 'err', 'El email es obligatorio.');      return; }
+  if (!password) { setBanner('modal-msg-cuenta', 'err', 'La contraseña es obligatoria.'); return; }
+  if (username && !/^[a-zA-Z0-9][a-zA-Z0-9\-_]+$/.test(username))
+    { setBanner('modal-msg-cuenta', 'err', 'El slug tiene caracteres no válidos.'); return; }
+
+  $('modal-save').disabled = true; $('modal-save').textContent = 'Conectando…';
+  setBanner('modal-msg-cuenta', 'progress', 'Registrando cuenta y abriendo LinkedIn…');
+
+  try {
+    const r    = await fetch('/api/accounts', { method: 'POST', headers: hdrs(true), body: JSON.stringify({ username, email, password, proxy }) });
+    const data = await r.json();
+    if (data.error) {
+      setBanner('modal-msg-cuenta', 'err', data.error);
+      $('modal-save').disabled = false; $('modal-save').textContent = 'Iniciar sesión';
+      return;
+    }
+    if (data.status === 'already_logged_in') {
+      setBanner('modal-msg-cuenta', 'ok', `✅ ${data.message}`);
+      loadAccounts();
+      $('modal-save').disabled = false; $('modal-save').textContent = 'Iniciar sesión';
+      return;
+    }
+    setBanner('modal-msg-cuenta', 'progress', '⏳ Chrome se está abriendo. Esto puede tardar 15–30 s…');
+    pollLoginStatus(data.poll_username || username);
   } catch (err) {
-    $('detail-title').textContent = 'Error al cargar ' + friendlyName(fileName);
-    $('detail-stats').textContent = String(err);
-    $('det-tbody').innerHTML = '<tr><td class="no-rows">No se pudo cargar el archivo. Detalle: ' + esc(String(err)) + '</td></tr>';
-    return;
+    setBanner('modal-msg-cuenta', 'err', 'Error de red: ' + err.message);
+    $('modal-save').disabled = false; $('modal-save').textContent = 'Iniciar sesión';
   }
+};
 
-  if (!Array.isArray(data)) {
-    $('detail-title').textContent = 'Error al cargar el archivo';
-    $('detail-stats').textContent = data.error || 'Respuesta inesperada del servidor';
-    $('det-tbody').innerHTML = '<tr><td class="no-rows">Error: ' + esc(data.error || 'respuesta inesperada') + '</td></tr>';
-    return;
-  }
-
-  S.fileName = fileName;
-  S.allData  = data;
-  S.filter   = 'all';
-  S.sortCol  = '';
-  S.sortDir  = 1;
-  S.page     = 1;
-  S.pageSize = 25;
-  S.view     = 'table';
-
-  $('det-search').value = '';
-  $('dl-scope').value   = 'all';
-  $('pg-size').value    = '25';
-  document.querySelectorAll('#pills .pill').forEach(p => p.classList.toggle('on', p.dataset.f === 'all'));
-  $('det-table-wrap').style.display = 'block';
-
-  $('detail-title').textContent = friendlyName(fileName);
-  render();
+function pollLoginStatus(pollUser) {
+  if (_loginPollers[pollUser]) clearInterval(_loginPollers[pollUser]);
+  _loginPollers[pollUser] = setInterval(async () => {
+    try {
+      const r    = await fetch(`/api/accounts/${encodeURIComponent(pollUser)}/login-status`, { headers: hdrs() });
+      const data = await r.json();
+      if (data.status === 'running' || data.status === 'unknown') return;
+      clearInterval(_loginPollers[pollUser]); delete _loginPollers[pollUser];
+      $('modal-save').disabled = false; $('modal-save').textContent = 'Iniciar sesión';
+      if (data.status === 'ok') {
+        const who = data.final_username || data.detected_username || pollUser;
+        setBanner('modal-msg-cuenta', 'ok', `✅ Sesión iniciada correctamente como @${who}.`);
+        loadAccounts();
+      } else if (data.status === 'needs_verification') {
+        setBanner('modal-msg-cuenta', 'warn', '⚠️ ' + (data.message || 'Se requiere verificación adicional.'));
+      } else {
+        setBanner('modal-msg-cuenta', 'err', '❌ ' + (data.message || 'Error desconocido.'));
+      }
+    } catch { /* red → seguir intentando */ }
+  }, 3000);
 }
 
-/* Ocultar detalle */
-$('btn-ocultar').addEventListener('click', () => {
-  $('section-detail').style.display = 'none';
-  $('section-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
-});
-
-/* ── Render tabla/tarjetas ── */
-/* ── Helpers de columnas ── */
-function getEmailCol(cols)   { return cols.find(c => /^emails?$/i.test(c)); }
-function getPhoneCol(cols)   { return cols.find(c => /^phones?|tel[eé]fono?|mobile/i.test(c)); }
-function getCompanyCol(cols) { return cols.find(c => /^compan(y|ies)$|^empresa(s)?$/i.test(c)); }
-
-/* ── Filtro de filas ── */
-function applyFilter(data) {
-  const cols   = data.length ? Object.keys(data[0]) : [];
-  const search = ($('det-search').value || '').trim().toLowerCase();
-  let out = data.slice();
-  if (search) out = out.filter(row => cols.some(c => String(row[c] ?? '').toLowerCase().includes(search)));
-  const ec = getEmailCol(cols);
-  const cc = getCompanyCol(cols);
-  if (S.filter === 'email'    && ec) out = out.filter(r => String(r[ec] ?? '').trim() !== '');
-  if (S.filter === 'no-email' && ec) out = out.filter(r => String(r[ec] ?? '').trim() === '');
-  if (S.filter === 'company'  && cc) out = out.filter(r => String(r[cc] ?? '').trim() !== '');
-  return out;
+function setBanner(id, type, text) {
+  const el = $(id); el.className = 'login-banner';
+  if (!type) { el.style.display = 'none'; return; }
+  const map = { progress: 'login-progress', ok: 'login-ok', warn: 'login-warn', err: 'login-err' };
+  el.classList.add('show', map[type] || 'login-progress');
+  el.innerHTML = type === 'progress' ? `<span class="spinner"></span><span>${esc(text)}</span>` : `<span>${text}</span>`;
 }
 
-/* ── Render tabla ── */
-function render() {
-  const cols = S.allData.length ? Object.keys(S.allData[0]) : [];
-  S.filtered = applyFilter(S.allData);
+/* ── Modal proxy ── */
+function openProxyModal(username, current) {
+  _proxyUsername = username;
+  $('proxy-account-label').textContent = `Cuenta: @${username}`;
+  $('f-proxy-edit').value = current || '';
+  setBanner('modal-msg-proxy', '', '');
+  $('modal-proxy').classList.add('open');
+  setTimeout(() => $('f-proxy-edit').focus(), 80);
+}
+function closeProxyModal() { $('modal-proxy').classList.remove('open'); _proxyUsername = null; }
+$('modal-proxy-close').onclick = closeProxyModal;
+$('modal-proxy-cancel').onclick = closeProxyModal;
+$('modal-proxy').onclick = e => { if (e.target === $('modal-proxy')) closeProxyModal(); };
+$('modal-proxy-save').onclick = async () => {
+  if (!_proxyUsername) return;
+  $('modal-proxy-save').disabled = true;
+  try {
+    const r = await fetch(`/api/accounts/${encodeURIComponent(_proxyUsername)}`, {
+      method: 'PATCH', headers: hdrs(true), body: JSON.stringify({ proxy: $('f-proxy-edit').value.trim() }),
+    });
+    const data = await r.json();
+    if (data.error) setBanner('modal-msg-proxy', 'err', data.error);
+    else { setBanner('modal-msg-proxy', 'ok', '✅ Proxy actualizado.'); loadAccounts(); setTimeout(closeProxyModal, 1200); }
+  } catch (err) { setBanner('modal-msg-proxy', 'err', 'Error: ' + err.message); }
+  $('modal-proxy-save').disabled = false;
+};
 
-  if (S.sortCol && cols.includes(S.sortCol)) {
-    S.filtered.sort((a, b) => S.sortDir * String(a[S.sortCol] ?? '').localeCompare(String(b[S.sortCol] ?? ''), undefined, { numeric: true }));
+/* ── Confirmar eliminar ── */
+function confirmDelete(username) {
+  $('confirm-text').textContent = `¿Eliminar la cuenta "@${username}"? Los datos de contactos se conservan.`;
+  _confirmCallback = async () => {
+    await fetch(`/api/accounts/${encodeURIComponent(username)}`, { method: 'DELETE', headers: hdrs() });
+    $('modal-confirm').classList.remove('open'); loadAccounts();
+  };
+  $('modal-confirm').classList.add('open');
+}
+$('confirm-cancel').onclick = () => $('modal-confirm').classList.remove('open');
+$('confirm-ok').onclick     = () => _confirmCallback && _confirmCallback();
+$('modal-confirm').onclick  = e => { if (e.target === $('modal-confirm')) $('modal-confirm').classList.remove('open'); };
+
+/* ── Scrapeos ── */
+async function triggerScrape(mode, account, btnEl) {
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳'; }
+  try {
+    const r    = await fetch('/api/trigger-scrape', { method: 'POST', headers: hdrs(true), body: JSON.stringify({ mode, account }) });
+    const data = await r.json();
+    if (r.status === 429 && data.rate_limited) showToast(data.error, 'warn');
+    else if (r.status === 409)                  showToast('Ya hay un scrape en ejecución.', 'warn');
+    else if (data.error)                        showToast('Error: ' + data.error, 'err');
+    else {
+      showToast(`${mode === 'index' ? '🗂 Actualizando lista' : '▶ Scraping'} iniciado para @${account}…`, 'ok');
+      const poll = setInterval(async () => {
+        const s = await (await fetch('/api/trigger-status', { headers: hdrs() })).json();
+        if (!s.running) { clearInterval(poll); loadAccounts(); }
+      }, 4000);
+    }
+  } catch (err) { showToast('Error: ' + err.message, 'err'); }
+  finally { if (btnEl) { btnEl.disabled = false; btnEl.textContent = origText; } }
+}
+
+function showToast(msg, type = 'ok') {
+  let el = document.getElementById('_toast');
+  if (!el) {
+    el = document.createElement('div'); el.id = '_toast';
+    el.style.cssText = 'position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%);padding:.65rem 1.1rem;border-radius:10px;font-size:.9rem;font-weight:500;box-shadow:0 4px 18px rgba(0,0,0,.18);z-index:1000;max-width:440px;text-align:center;transition:opacity .3s;pointer-events:none;';
+    document.body.appendChild(el);
   }
+  const styles = { ok: 'background:#107c41;color:#fff', warn: 'background:#b45309;color:#fff', err: 'background:#b91c1c;color:#fff' };
+  el.style.cssText += ';' + (styles[type] || styles.ok);
+  el.textContent = msg; el.style.opacity = '1';
+  clearTimeout(el._t); el._t = setTimeout(() => { el.style.opacity = '0'; }, 4500);
+}
 
-  const total = S.filtered.length;
-  const start = (S.page - 1) * S.pageSize;
-  const page  = S.filtered.slice(start, start + S.pageSize);
+/* ══════════════════════════════════════════════════════════════
+   TAB CONTACTOS
+══════════════════════════════════════════════════════════════ */
+const CT = {
+  page: 1, perPage: 50, total: 0, pages: 1,
+  sort: 'last_scraped_at', order: 'desc',
+  filter: 'all', search: '',
+  runFrom: null, runTo: null,
+};
 
-  const ec = getEmailCol(cols), cc = getCompanyCol(cols);
-  const wEmail = ec ? S.filtered.filter(r => String(r[ec] ?? '').trim() !== '').length : 0;
-  const wComp  = cc ? new Set(S.filtered.map(r => String(r[cc] ?? '').trim()).filter(Boolean)).size : 0;
-  $('detail-stats').textContent =
-    `${total} contacto${total !== 1 ? 's' : ''}${ec ? ` · ${wEmail} con email` : ''}${cc ? ` · ${wComp} empresa${wComp !== 1 ? 's' : ''}` : ''}`;
+// Columnas visibles en la tabla (first_name/last_name se exportan pero no se muestran en tabla)
+const CT_COLS = [
+  { key: 'name',           label: 'Nombre',        sortable: true  },
+  { key: 'position',       label: 'Cargo',          sortable: true  },
+  { key: 'company',        label: 'Empresa',         sortable: true  },
+  { key: 'location',       label: 'Ubicación',      sortable: true  },
+  { key: 'emails',         label: 'Email',           sortable: false },
+  { key: 'phones',         label: 'Teléfono',       sortable: false },
+  { key: 'open_to_work',   label: 'Disponible',     sortable: false },
+  { key: 'last_scraped_at',label: 'Scrapeado',       sortable: true  },
+];
 
-  $('pg-info').textContent  = total === 0 ? '0 de 0' : `${start + 1}-${Math.min(start + S.pageSize, total)} de ${total}`;
-  $('pg-prev').disabled     = S.page <= 1;
-  $('pg-next').disabled     = start + S.pageSize >= total;
+async function loadContacts() {
+  const account = $('ct-account').value;
+  if (!account) { $('ct-tbody').innerHTML = '<tr><td class="no-rows" colspan="8">Selecciona una cuenta.</td></tr>'; return; }
 
-  $('det-thead').innerHTML = '<tr>' + cols.map(c => {
-    const arrow = S.sortCol === c ? (S.sortDir === 1 ? ' ↑' : ' ↓') : '';
-    return `<th data-col="${esc(c)}">${esc(c)}${arrow}</th>`;
-  }).join('') + '</tr>';
-  $('det-thead').querySelectorAll('th').forEach(th => {
-    th.onclick = () => {
-      if (S.sortCol === th.dataset.col) S.sortDir = -S.sortDir;
-      else { S.sortCol = th.dataset.col; S.sortDir = 1; }
-      render();
-    };
+  $('ct-tbody').innerHTML = '<tr><td class="no-rows" colspan="8">Cargando…</td></tr>';
+  $('ct-stats').textContent = '…';
+
+  const params = new URLSearchParams({
+    account, page: CT.page, per_page: CT.perPage,
+    sort: CT.sort, order: CT.order,
+    filter: CT.filter,
   });
+  if (CT.search)  params.set('search', CT.search);
+  if (CT.runFrom) params.set('run_from', CT.runFrom);
+  if (CT.runTo)   params.set('run_to',   CT.runTo);
 
-  if (!page.length) {
-    $('det-tbody').innerHTML = `<tr><td colspan="${cols.length}" class="no-rows">No hay resultados.</td></tr>`;
-  } else {
-    $('det-tbody').innerHTML = page.map(row =>
-      '<tr>' + cols.map(c => `<td>${esc(String(row[c] ?? ''))}</td>`).join('') + '</tr>'
-    ).join('');
+  try {
+    const r    = await fetch('/api/contacts?' + params.toString(), { headers: hdrs() });
+    const data = await r.json();
+    if (data.error) {
+      $('ct-tbody').innerHTML = `<tr><td class="no-rows" colspan="8" style="color:#c00">${esc(data.error)}</td></tr>`;
+      return;
+    }
+    CT.total = data.total; CT.pages = data.pages;
+
+    // Stats bar
+    const wEmail = data.contacts.filter(c => c.emails).length;
+    const wPhone = data.contacts.filter(c => c.phones).length;
+    $('ct-stats').textContent =
+      `${data.total.toLocaleString('es-ES')} contacto${data.total !== 1 ? 's' : ''}` +
+      ` · ${wEmail} con email en esta página · ${wPhone} con teléfono`;
+
+    // Paginación
+    $('ct-page-info').textContent = `Página ${data.page} de ${data.pages}`;
+    $('ct-prev').disabled = data.page <= 1;
+    $('ct-next').disabled = data.page >= data.pages;
+
+    // Cabecera
+    $('ct-thead').innerHTML = '<tr>' + CT_COLS.map(c => {
+      const isActive = CT.sort === c.key;
+      const arrow    = isActive ? (CT.order === 'asc' ? ' ↑' : ' ↓') : ' ↕';
+      const cursor   = c.sortable ? 'cursor:pointer' : 'cursor:default';
+      return `<th data-col="${c.key}" data-sortable="${c.sortable}" class="${isActive ? 'sorted' : ''}" style="${cursor}">
+        ${esc(c.label)}<span class="sort-arrow">${c.sortable ? arrow : ''}</span>
+      </th>`;
+    }).join('') + '</tr>';
+
+    $('ct-thead').querySelectorAll('th[data-sortable="true"]').forEach(th => {
+      th.onclick = () => {
+        if (CT.sort === th.dataset.col) CT.order = CT.order === 'asc' ? 'desc' : 'asc';
+        else { CT.sort = th.dataset.col; CT.order = 'desc'; }
+        CT.page = 1; loadContacts();
+      };
+    });
+
+    // Filas
+    if (!data.contacts.length) {
+      $('ct-tbody').innerHTML = `<tr><td class="no-rows" colspan="${CT_COLS.length}">Sin contactos con estos filtros.</td></tr>`;
+      return;
+    }
+    $('ct-tbody').innerHTML = data.contacts.map(row => '<tr>' + CT_COLS.map(c => {
+      let v = row[c.key];
+      if (c.key === 'last_scraped_at')   v = dtLocalDate(v);
+      else if (c.key === 'open_to_work') v = v ? '✓' : '';
+      return `<td title="${esc(String(v ?? ''))}">${esc(String(v ?? ''))}</td>`;
+    }).join('') + '</tr>').join('');
+
+  } catch (err) {
+    $('ct-tbody').innerHTML = `<tr><td class="no-rows" colspan="8" style="color:#c00">Error: ${esc(err.message)}</td></tr>`;
   }
 }
 
-/* ── Controles detalle ── */
-$('det-search').addEventListener('input', () => { S.page = 1; render(); });
-$('pg-size').addEventListener('change', () => { S.pageSize = parseInt($('pg-size').value); S.page = 1; render(); });
-$('pg-prev').addEventListener('click', () => { if (S.page > 1) { S.page--; render(); } });
-$('pg-next').addEventListener('click', () => { const t = S.filtered.length; if ((S.page - 1) * S.pageSize + S.pageSize < t) { S.page++; render(); } });
+// Eventos de la barra de filtros
+$('ct-account').addEventListener('change', () => { CT.page = 1; loadContacts(); });
+$('ct-search').addEventListener('input',  debounce(() => { CT.search = $('ct-search').value; CT.page = 1; loadContacts(); }, 350));
+$('ct-per-page').addEventListener('change', () => { CT.perPage = parseInt($('ct-per-page').value); CT.page = 1; loadContacts(); });
+$('ct-prev').addEventListener('click', () => { if (CT.page > 1) { CT.page--; loadContacts(); } });
+$('ct-next').addEventListener('click', () => { if (CT.page < CT.pages) { CT.page++; loadContacts(); } });
 
-document.querySelectorAll('#pills .pill').forEach(p => {
+document.querySelectorAll('#ct-pills .pill').forEach(p => {
   p.addEventListener('click', () => {
-    S.filter = p.dataset.f; S.page = 1;
-    document.querySelectorAll('#pills .pill').forEach(x => x.classList.remove('on'));
-    p.classList.add('on');
-    render();
+    CT.filter = p.dataset.cf; CT.page = 1;
+    document.querySelectorAll('#ct-pills .pill').forEach(x => x.classList.remove('on'));
+    p.classList.add('on'); loadContacts();
   });
 });
+
+$('ct-clear-run').addEventListener('click', () => {
+  CT.runFrom = null; CT.runTo = null; CT.page = 1;
+  $('ct-run-banner').style.display = 'none'; loadContacts();
+});
+
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
 /* ── Descargas ── */
-// Devuelve los registros filtrados + solo las columnas según dl-scope
-function getDownloadRows() {
-  const scope = $('dl-scope').value;
-  const rows  = S.filtered;   // siempre respeta filtro/búsqueda activo
-  if (!rows.length) return [];
-
-  const allCols   = Object.keys(rows[0]);
-  const emailCol  = getEmailCol(allCols);
-  const phoneCol  = getPhoneCol(allCols);
-
-  let keepCols;
-  if (scope === 'email')        keepCols = [emailCol].filter(Boolean);
-  else if (scope === 'phone')   keepCols = [phoneCol].filter(Boolean);
-  else if (scope === 'email-phone') keepCols = [emailCol, phoneCol].filter(Boolean);
-  else                          keepCols = allCols;   // "all"
-
-  if (!keepCols.length) { alert('No se encontró la columna solicitada en este archivo.'); return []; }
-
-  // Proyectar solo las columnas seleccionadas y filtrar filas vacías
-  return rows
-    .map(r => Object.fromEntries(keepCols.map(c => [c, r[c] ?? ''])))
-    .filter(r => keepCols.some(c => String(r[c]).trim() !== ''));
+function ctExportUrl(fmt, overrides = {}) {
+  const limit  = parseInt(overrides.max_rows ?? $('ct-dl-limit').value) || 0;
+  const crm    = overrides.crm ?? $('ct-dl-crm').value ?? 'full';
+  const filter = overrides.filter ?? CT.filter;
+  const params = new URLSearchParams({
+    account: $('ct-account').value, format: fmt,
+    filter, sort: CT.sort, order: CT.order, crm,
+  });
+  if (limit > 0)  params.set('max_rows', limit);
+  if (CT.search)  params.set('search',   CT.search);
+  if (CT.runFrom) params.set('run_from', CT.runFrom);
+  if (CT.runTo)   params.set('run_to',   CT.runTo);
+  if (S.token)    params.set('token',    S.token);
+  return '/api/contacts/export?' + params.toString();
 }
 
-function dlSuffix() {
-  const map = { all: '', email: '_solo-email', phone: '_solo-telefono', 'email-phone': '_email-telefono' };
-  return (map[$('dl-scope').value] || '') + (S.filter !== 'all' ? '_filtrado' : '');
+
+const _XLSX_MAX = 100_000;
+
+function _exportRowCount() {
+  const limit = parseInt($('ct-dl-limit').value) || 0;
+  return limit > 0 ? Math.min(limit, CT.total) : CT.total;
 }
 
-function toCSVBlob(rows) {
-  if (!rows.length) return null;
-  const cols  = Object.keys(rows[0]);
-  const lines = [
-    cols.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(','),
-    ...rows.map(r => cols.map(c => '"' + String(r[c] ?? '').replace(/"/g, '""') + '"').join(','))
-  ];
-  return new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-}
-
-function dl(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name; a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-$('btn-csv').addEventListener('click', () => {
-  const rows = getDownloadRows(); if (!rows.length) return;
-  dl(toCSVBlob(rows), S.fileName.replace(/\.csv$/i, '') + dlSuffix() + '.csv');
-});
-
-$('btn-xl').addEventListener('click', () => {
-  const rows = getDownloadRows(); if (!rows.length) return;
-  // xlsx real del servidor solo si descargamos todo sin filtros
-  const scope  = $('dl-scope').value;
-  const search = ($('det-search').value || '').trim();
-  if (scope === 'all' && S.filter === 'all' && !search) {
-    const q = S.token ? '&token=' + encodeURIComponent(S.token) : '';
-    const a = document.createElement('a');
-    a.href = '/api/files/' + encodeURIComponent(S.fileName) + '?format=xlsx' + q;
-    a.download = S.fileName.replace(/\.csv$/i, '') + '.xlsx';
-    a.click();
-    return;
+$('ct-dl-csv').addEventListener('click', () => {
+  if (!$('ct-account').value) { showToast('Selecciona una cuenta primero.', 'warn'); return; }
+  const n = _exportRowCount();
+  if (n > 10_000) {
+    const ok = confirm(
+      `Vas a descargar ${n.toLocaleString('es-ES')} contactos en CSV.\n` +
+      `El archivo puede tardar unos segundos. ¿Continuar?`
+    );
+    if (!ok) return;
   }
-  dl(toCSVBlob(rows), S.fileName.replace(/\.csv$/i, '') + dlSuffix() + '.xlsx');
+  window.location.href = ctExportUrl('csv');
 });
 
-$('btn-pdf').addEventListener('click', () => {
-  const rows = getDownloadRows(); if (!rows.length) return;
-  generatePDF(rows, S.fileName.replace(/\.csv$/i, '') + dlSuffix());
+$('ct-dl-xlsx').addEventListener('click', () => {
+  if (!$('ct-account').value) { showToast('Selecciona una cuenta primero.', 'warn'); return; }
+  const n = _exportRowCount();
+  if (n > _XLSX_MAX) {
+    const ok = confirm(
+      `Hay ${n.toLocaleString('es-ES')} contactos pero el Excel tiene un límite de ${_XLSX_MAX.toLocaleString('es-ES')} filas.\n` +
+      `Usa CSV para exportar todos sin límite. ¿Continuar con Excel?`
+    );
+    if (!ok) return;
+  }
+  window.location.href = ctExportUrl('xlsx');
+});
+$('ct-dl-pdf').addEventListener('click', () => {
+  if (!$('ct-account').value) { showToast('Selecciona una cuenta primero.', 'warn'); return; }
+  const rows = [];
+  $('ct-tbody').querySelectorAll('tr').forEach(tr => {
+    const cells = tr.querySelectorAll('td');
+    if (!cells.length || cells[0].classList.contains('no-rows')) return;
+    const row = {};
+    CT_COLS.forEach((c, i) => { row[c.label] = cells[i]?.textContent ?? ''; });
+    rows.push(row);
+  });
+  if (!rows.length) { showToast('No hay filas visibles para generar el PDF.', 'warn'); return; }
+  generatePDF(rows, `contactos_${$('ct-account').value}_p${CT.page}`);
 });
 
+/* ══════════════════════════════════════════════════════════════
+   HISTORIAL
+══════════════════════════════════════════════════════════════ */
+$('btn-runs-refresh').onclick = loadRuns;
+$('runs-days').addEventListener('change', loadRuns);
+
+async function loadRuns() {
+  const tbody   = $('runs-tbody');
+  const days    = $('runs-days').value;
+  const summary = $('runs-summary');
+  try {
+    const params = new URLSearchParams({ days, limit: 200 });
+    const r    = await fetch('/api/runs?' + params.toString(), { headers: hdrs() });
+    const runs = await r.json();
+    if (!Array.isArray(runs) || !runs.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="no-rows">Sin ejecuciones en este período.</td></tr>';
+      summary.textContent = ''; return;
+    }
+    // Resumen
+    const total = runs.reduce((s, r) => s + (r.contacts_scraped || 0), 0);
+    const label = days === '0' ? 'todo el historial' : `los últimos ${days} días`;
+    summary.textContent = `${runs.length} ejecuciones en ${label} · ${total.toLocaleString('es-ES')} contactos scrapeados en total`;
+
+    tbody.innerHTML = runs.map(run => {
+      const s = dtLocal(run.started_at);
+      const e = dtLocal(run.finished_at);
+      const hasContacts = (run.contacts_scraped || 0) > 0;
+      return `<tr>
+        <td><strong>${esc(run.username)}</strong></td>
+        <td>${esc(s)}</td>
+        <td>${esc(e)}</td>
+        <td><span class="badge badge-blue">${run.contacts_scraped ?? 0}</span></td>
+        <td><span class="badge badge-green">${run.contacts_new ?? 0}</span></td>
+        <td>${run.contacts_updated ?? 0}</td>
+        <td>${hasContacts
+          ? `<button class="btn btn-teal btn-sm" onclick="goToContacts('${esc(run.username)}','${esc(run.started_at)}','${esc(run.finished_at)}','${esc(s)}')">Ver contactos</button>`
+          : ''
+        }</td>
+      </tr>`;
+    }).join('');
+  } catch {
+    tbody.innerHTML = '<tr><td colspan="7" class="no-rows" style="color:#c00">Error al cargar historial.</td></tr>';
+    summary.textContent = '';
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PDF (página actual)
+══════════════════════════════════════════════════════════════ */
 function generatePDF(rows, fileName) {
-  if (!rows.length) { alert('Sin datos para PDF.'); return; }
-  if (!window.jspdf) { alert('Librería PDF no cargada.'); return; }
-
+  if (!rows.length || !window.jspdf) { alert('Sin datos o librería PDF no cargada.'); return; }
   const { jsPDF } = window.jspdf;
-  const allCols = Object.keys(rows[0]);
-
-  // Columnas que NUNCA van en PDF (URLs largas, IDs internos, fotos)
-  const SKIP_RE = /profile_link|profile_photo|profile_id|profile_url/i;
-
-  // Prioridad de columnas útiles para un PDF legible
-  const PRIORITY = ['name','first_name','last_name','emails','email','phones','phone',
-                    'company','location','position','premium','creator','is_connection',
-                    'followers','connections','open_to_work'];
-
-  // 1. Quitar URLs/IDs
-  let cols = allCols.filter(c => !SKIP_RE.test(c));
-
-  // 2. Si aún hay demasiadas columnas (>9), quedarse con las de prioridad
-  if (cols.length > 9) {
-    const prio = cols.filter(c => PRIORITY.some(p => c.toLowerCase() === p.toLowerCase()));
-    cols = prio.length >= 3 ? prio : cols.slice(0, 9);
-  }
-
-  if (!cols.length) { alert('No hay columnas válidas para PDF en este archivo.'); return; }
-
-  // 3. Truncar texto de celdas (URLs se filtran pero otras pueden ser largas)
-  const MAX_CELL = 40;
-  const trunc = v => { const s = String(v ?? ''); return s.length > MAX_CELL ? s.slice(0, MAX_CELL) + '…' : s; };
-
-  const head = [cols];
-  const body = rows.map(r => cols.map(c => trunc(r[c])));
-
-  // 4. Orientación: landscape si hay más de 5 columnas
+  const cols  = Object.keys(rows[0]);
   const orient = cols.length > 5 ? 'landscape' : 'portrait';
-  const doc    = new jsPDF({ orientation: orient, unit: 'mm', format: 'a4' });
-  const pw     = doc.internal.pageSize.getWidth();
-  const ph     = doc.internal.pageSize.getHeight();
+  const doc   = new jsPDF({ orientation: orient, unit: 'mm', format: 'a4' });
+  const pw    = doc.internal.pageSize.getWidth();
+  const ph    = doc.internal.pageSize.getHeight();
+  const trunc = v => { const s = String(v ?? ''); return s.length > 35 ? s.slice(0, 35) + '…' : s; };
 
-  // 5. Título
-  const title = fileName.replace(/\.csv$/i, '').replace(/[_-]/g, ' ');
-  doc.setFontSize(12); doc.setTextColor(10, 102, 194);
-  doc.text(title, 14, 14);
+  doc.setFontSize(11); doc.setTextColor(10, 102, 194);
+  doc.text(fileName.replace(/_/g, ' '), 14, 14);
   doc.setFontSize(8); doc.setTextColor(130, 130, 130);
-  doc.text(`${rows.length} registros · ${cols.length} columnas · ${new Date().toLocaleDateString('es-ES')}  |  Para datos completos usa Excel`, 14, 20);
+  doc.text(`${rows.length} registros · ${new Date().toLocaleDateString('es-ES')}`, 14, 20);
 
-  // 6. Tabla proporcional al ancho de página
-  const usableW  = pw - 28;                        // margen 14 a cada lado
-  const colW     = usableW / cols.length;           // reparto igual entre columnas seleccionadas
-
+  const usableW = pw - 28;
   doc.autoTable({
     startY: 25,
-    head,
-    body,
+    head: [cols],
+    body: rows.map(r => cols.map(c => trunc(r[c]))),
     tableWidth: usableW,
     margin: { left: 14, right: 14 },
-    styles: {
-      fontSize:    7.5,
-      cellPadding: { top: 2, right: 3, bottom: 2, left: 3 },
-      overflow:    'ellipsize',   // texto largo → puntos suspensivos (no rompe columna)
-      valign:      'middle',
-      lineColor:   [210, 215, 220],
-      lineWidth:   0.15,
-    },
-    headStyles: {
-      fillColor: [10, 102, 194],
-      textColor: 255,
-      fontStyle: 'bold',
-      fontSize:  7.5,
-      halign:    'left',
-    },
+    styles: { fontSize: 7, cellPadding: { top: 2, right: 2.5, bottom: 2, left: 2.5 }, overflow: 'ellipsize', valign: 'middle', lineColor: [210, 215, 220], lineWidth: .15 },
+    headStyles: { fillColor: [10, 102, 194], textColor: 255, fontStyle: 'bold', halign: 'left' },
     alternateRowStyles: { fillColor: [246, 248, 252] },
-    columnStyles: Object.fromEntries(cols.map((_, i) => [i, { cellWidth: colW }])),
+    columnStyles: Object.fromEntries(cols.map((_, i) => [i, { cellWidth: usableW / cols.length }])),
     didDrawPage: () => {
-      const pg  = doc.internal.getCurrentPageInfo().pageNumber;
-      const tot = doc.internal.getNumberOfPages();
-      doc.setFontSize(7); doc.setTextColor(180, 180, 180);
-      doc.text(`Página ${pg} / ${tot}`, pw / 2, ph - 6, { align: 'center' });
+      const pg = doc.internal.getCurrentPageInfo().pageNumber, tot = doc.internal.getNumberOfPages();
+      doc.setFontSize(7); doc.setTextColor(180); doc.text(`${pg}/${tot}`, pw / 2, ph - 6, { align: 'center' });
     },
   });
-
-  doc.save(fileName.replace(/\.csv$/i, '') + '.pdf');
-}
-
-async function downloadPdfForFile(fileName) {
-  const r    = await fetch('/api/files/' + encodeURIComponent(fileName) + '?format=json', { headers: hdrs() });
-  const data = await r.json();
-  if (!Array.isArray(data) || !data.length) { alert('Sin datos para PDF.'); return; }
-  generatePDF(data, fileName);
+  doc.save(fileName + '.pdf');
 }
 </script>
 </body>

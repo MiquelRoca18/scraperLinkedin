@@ -1,5 +1,18 @@
 # main.py
-# Solo modo 1: scraping de las conexiones de la cuenta que inicia sesión.
+# Punto de entrada del scraper de LinkedIn.
+#
+# Modos:
+#   --mode index   → Fase A: recopila todos los slugs de conexiones y los
+#                    guarda en contact_queue como 'pending'. Rápido.
+#   --mode enrich  → Fase B (defecto): toma slugs 'pending' de la queue,
+#                    visita cada perfil, extrae datos completos y los guarda
+#                    en la tabla contacts. Respetar límites anti-ban.
+#
+# Controles de seguridad activos en ambos modos:
+#   · Cooldown tras bloqueo (429 / on_block)
+#   · Franja horaria (SCRAPE_WINDOW_START – SCRAPE_WINDOW_END)
+#   · Presupuesto diario (MAX_CONTACTS_PER_DAY)
+#   · Intervalo mínimo entre ejecuciones (MIN_HOURS_BETWEEN_RUNS)
 
 import argparse
 import logging
@@ -9,69 +22,81 @@ import sys
 import time
 import pandas as pd
 from datetime import datetime, timezone
+from typing import Optional
 from dotenv import load_dotenv
+
 from scraper import (
     init_client,
     get_current_username,
     scrape_profile_and_connections,
+    collect_all_slugs,
+    _enrich_connection_from_profile,
+    _create_driver_with_cookies,
+    session_file_for,
 )
-from db import insert_run
+from db import (
+    insert_run,
+    queue_slugs,
+    get_pending_slugs,
+    upsert_contact,
+    mark_queue_done,
+    mark_queue_error,
+    get_daily_count,
+    get_queue_stats,
+    contact_exists,
+    days_since_last_scrape,
+    register_account,
+    update_account_last_run,
+    get_account_proxy,
+)
+from notifications import (
+    notify_session_expired,
+    notify_block,
+    notify_daily_summary,
+    notify_index_complete,
+)
 from log_config import setup_logging
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Cooldown tras 429: no hacer más peticiones hasta que pasen estas horas
-COOLDOWN_HOURS_AFTER_429 = int(os.getenv("COOLDOWN_HOURS_AFTER_429", "48"))
-COOLDOWN_FILE = ".linkedin_429_cooldown"
+# ── Configuración desde .env ───────────────────────────────────────────────────
 
-# Mínimo de horas entre ejecuciones (0 = desactivado). Útil en pruebas para no saturar.
-MIN_HOURS_BETWEEN_RUNS = int(os.getenv("MIN_HOURS_BETWEEN_RUNS", "0"))
-LAST_RUN_FILE = ".linkedin_last_run"
+COOLDOWN_HOURS_AFTER_429  = int(os.getenv("COOLDOWN_HOURS_AFTER_429", "48"))
+MIN_HOURS_BETWEEN_RUNS    = int(os.getenv("MIN_HOURS_BETWEEN_RUNS", "0"))
+MAX_CONTACTS_PER_RUN      = max(1, min(int(os.getenv("MAX_CONTACTS_PER_RUN",
+                                           os.getenv("MAX_CONTACTS", "20"))), 50))
+MAX_CONTACTS_PER_DAY      = max(1, int(os.getenv("MAX_CONTACTS_PER_DAY", "80")))
+SCRAPE_WINDOW_START       = int(os.getenv("SCRAPE_WINDOW_START", "8"))   # hora (0-23)
+SCRAPE_WINDOW_END         = int(os.getenv("SCRAPE_WINDOW_END", "21"))    # hora (0-23)
+# Días mínimos antes de refrescar un contacto ya scrapeado.
+# Si tiene datos de hace menos de CONTACT_REFRESH_DAYS, se salta sin visitar el perfil.
+CONTACT_REFRESH_DAYS      = max(1, int(os.getenv("CONTACT_REFRESH_DAYS", "30")))
 
-# Límite de conexiones a scrapear; cap para no saturar y evitar 429/bloqueos
-_default_max = 15
-_max_cap = int(os.getenv("MAX_CONTACTS_CAP", "50"))
-_raw = os.getenv("MAX_CONTACTS", str(_default_max))
-try:
-    _requested = int(_raw)
-except (TypeError, ValueError):
-    _requested = _default_max
-MAX_CONTACTS = max(1, min(_requested, _max_cap))
-if _requested != MAX_CONTACTS:
-    msg = f"MAX_CONTACTS limitado a {MAX_CONTACTS} (solicitado: {_requested}, máximo: {_max_cap})"
-    logger.info(msg)
-    print(f"ℹ️  {msg}")
+COOLDOWN_FILE  = ".linkedin_429_cooldown"
+LAST_RUN_FILE  = ".linkedin_last_run"
 
+
+# ── Controles de seguridad ─────────────────────────────────────────────────────
 
 def _check_cooldown() -> bool:
-    """
-    True = estamos en cooldown, no ejecutar (ni siquiera conectar).
-    False = podemos ejecutar. Si el archivo existía y ya pasó el tiempo, lo borra.
-    """
+    """True = estamos en cooldown (no ejecutar)."""
     if not os.path.isfile(COOLDOWN_FILE):
         return False
     try:
         with open(COOLDOWN_FILE) as f:
             until = float(f.read().strip())
     except (ValueError, OSError):
-        try:
-            os.remove(COOLDOWN_FILE)
-        except OSError:
-            pass
+        _remove_file(COOLDOWN_FILE)
         return False
     if time.time() < until:
         return True
-    try:
-        os.remove(COOLDOWN_FILE)
-    except OSError:
-        pass
+    _remove_file(COOLDOWN_FILE)
     return False
 
 
 def _write_cooldown() -> None:
-    """Guarda estado: no volver a hacer peticiones hasta pasadas COOLDOWN_HOURS_AFTER_429."""
     until = time.time() + COOLDOWN_HOURS_AFTER_429 * 3600
     try:
         with open(COOLDOWN_FILE, "w") as f:
@@ -81,10 +106,7 @@ def _write_cooldown() -> None:
 
 
 def _check_min_interval() -> bool:
-    """
-    True = ha pasado menos de MIN_HOURS_BETWEEN_RUNS desde la última ejecución, no arrancar.
-    False = podemos ejecutar. Si pasamos, guardamos timestamp de esta ejecución.
-    """
+    """True = no han pasado MIN_HOURS_BETWEEN_RUNS desde la última ejecución."""
     if MIN_HOURS_BETWEEN_RUNS <= 0:
         return False
     now = time.time()
@@ -92,10 +114,10 @@ def _check_min_interval() -> bool:
         try:
             with open(LAST_RUN_FILE) as f:
                 last = float(f.read().strip())
+            if now - last < MIN_HOURS_BETWEEN_RUNS * 3600:
+                return True
         except (ValueError, OSError):
-            last = 0
-        if now - last < MIN_HOURS_BETWEEN_RUNS * 3600:
-            return True
+            pass
     try:
         with open(LAST_RUN_FILE, "w") as f:
             f.write(str(now))
@@ -103,6 +125,35 @@ def _check_min_interval() -> bool:
         pass
     return False
 
+
+def _check_time_window() -> bool:
+    """
+    True = estamos FUERA de la franja horaria permitida y no debemos ejecutar.
+    La franja va de SCRAPE_WINDOW_START a SCRAPE_WINDOW_END (hora local).
+    """
+    if SCRAPE_WINDOW_START == 0 and SCRAPE_WINDOW_END == 23:
+        return False  # sin restricción horaria
+    hour = datetime.now().hour
+    if SCRAPE_WINDOW_START <= SCRAPE_WINDOW_END:
+        return not (SCRAPE_WINDOW_START <= hour < SCRAPE_WINDOW_END)
+    # Franja que cruza medianoche (ej. 22-6): es inusual pero soportado
+    return not (hour >= SCRAPE_WINDOW_START or hour < SCRAPE_WINDOW_END)
+
+
+def _check_daily_budget(username: str) -> bool:
+    """True = ya se ha alcanzado el presupuesto diario (no ejecutar más)."""
+    count = get_daily_count(username)
+    return count >= MAX_CONTACTS_PER_DAY
+
+
+def _remove_file(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+# ── Helpers de usuario ────────────────────────────────────────────────────────
 
 def extract_username(url: str) -> str:
     match = re.search(r"linkedin\.com/in/([^/?]+)", url)
@@ -112,10 +163,6 @@ def extract_username(url: str) -> str:
 
 
 def get_username(account) -> str:
-    """
-    Usuario para los archivos: quien ha iniciado sesión (detectado por API)
-    o LINKEDIN_PROFILE_URL en .env; si no, se pide la URL como fallback.
-    """
     username = get_current_username(account)
     if username:
         return username
@@ -128,10 +175,6 @@ def get_username(account) -> str:
 
 
 def get_username_non_interactive(account) -> str:
-    """
-    Usuario en modo no interactivo (sin input): API o LINKEDIN_PROFILE_URL.
-    Lanza ValueError si no se puede obtener (para cron/viewer).
-    """
     username = get_current_username(account)
     if username:
         return username
@@ -139,22 +182,256 @@ def get_username_non_interactive(account) -> str:
     if url:
         return extract_username(url)
     raise ValueError(
-        "En modo no interactivo hace falta LINKEDIN_PROFILE_URL en .env o que la sesión devuelva el usuario."
+        "En modo no interactivo hace falta LINKEDIN_PROFILE_URL en .env "
+        "o que la sesión devuelva el usuario."
     )
 
+
+# ── Comprobaciones comunes ────────────────────────────────────────────────────
+
+def _run_safety_checks(username: str, interactive: bool) -> None:
+    """
+    Lanza RuntimeError (modo no interactivo) o sys.exit(0) (interactivo)
+    si algún control de seguridad impide ejecutar.
+    """
+    def _abort(msg: str) -> None:
+        logger.warning(msg)
+        print(f"⚠️  {msg}")
+        if interactive:
+            sys.exit(0)
+        raise RuntimeError(msg)
+
+    if _check_cooldown():
+        try:
+            with open(COOLDOWN_FILE) as f:
+                until_dt = datetime.fromtimestamp(float(f.read())).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, OSError):
+            until_dt = f"{COOLDOWN_HOURS_AFTER_429} h"
+        _abort(f"Cooldown activo: LinkedIn bloqueó en una ejecución anterior. "
+               f"No se ejecutará hasta: {until_dt}")
+
+    if _check_min_interval():
+        _abort(f"Solo se permite una ejecución cada {MIN_HOURS_BETWEEN_RUNS} h.")
+
+    if _check_time_window():
+        now_h = datetime.now().hour
+        _abort(f"Fuera de la franja horaria permitida ({SCRAPE_WINDOW_START}:00–"
+               f"{SCRAPE_WINDOW_END}:00). Hora actual: {now_h}:xx.")
+
+    if username and _check_daily_budget(username):
+        _abort(f"Presupuesto diario alcanzado: ya se han procesado "
+               f"{get_daily_count(username)}/{MAX_CONTACTS_PER_DAY} "
+               f"contactos hoy para '{username}'.")
+
+
+# ── Modo INDEX ────────────────────────────────────────────────────────────────
+
+def run_index(interactive: bool = True, account: Optional[str] = None) -> None:
+    """
+    Fase A: recopila todos los slugs de conexiones y los encola en contact_queue.
+    No visita perfiles individuales → rápido y de bajo riesgo.
+
+    account: slug de LinkedIn de la cuenta a usar (None = cuenta por defecto).
+    """
+    setup_logging()
+    logger.info("run_index iniciado%s", f" [{account}]" if account else "")
+    print("🗂️  Modo INDEX: recopilando índice de conexiones...\n")
+
+    _run_safety_checks(username="", interactive=interactive)
+
+    proxy = get_account_proxy(account) if account else None
+    try:
+        session = init_client(account=account, proxy=proxy)
+    except RuntimeError:
+        notify_session_expired(account)
+        raise
+
+    username = get_username(session) if interactive else get_username_non_interactive(session)
+    logger.info("run_index: usuario=%s, proxy=%s", username, bool(proxy))
+
+    slugs = collect_all_slugs(session, proxy=proxy)
+
+    if not slugs:
+        print("ℹ️  No se encontraron slugs. Revisa la sesión.")
+        logger.warning("run_index: 0 slugs recopilados")
+        return
+
+    nuevos = queue_slugs(username, slugs)
+    stats = get_queue_stats(username)
+    logger.info("run_index: %d slugs totales, %d nuevos encolados", len(slugs), nuevos)
+    notify_index_complete(account or username, len(slugs), nuevos)
+    print(f"✅ Índice actualizado: {len(slugs)} conexiones encontradas, "
+          f"{nuevos} nuevas encoladas.")
+    print(f"   Cola actual → pending: {stats['pending']}, "
+          f"done: {stats['done']}, error: {stats['error']}, "
+          f"total: {stats['total']}")
+
+
+# ── Modo ENRICH ───────────────────────────────────────────────────────────────
+
+def run_enrich(
+    interactive: bool = True,
+    max_contacts_override: int | None = None,
+    account: Optional[str] = None,
+) -> None:
+    """
+    Fase B: toma slugs 'pending' de la cola y visita cada perfil para extraer
+    datos completos. Guarda los resultados en la tabla contacts y marca cada
+    slug como 'done' o 'error' en la queue.
+
+    Lógica de skip inteligente: si un contacto ya existe y fue scrapeado hace
+    menos de CONTACT_REFRESH_DAYS días, se marca done sin visitarlo (ahorra
+    peticiones y reduce el riesgo de bloqueo).
+
+    account: slug de LinkedIn de la cuenta a usar (None = cuenta por defecto).
+    """
+    setup_logging()
+    logger.info("run_enrich iniciado%s", f" [{account}]" if account else "")
+    print("👥 Modo ENRICH: enriqueciendo contactos pendientes...\n")
+
+    proxy = get_account_proxy(account) if account else None
+    try:
+        session = init_client(account=account, proxy=proxy)
+    except RuntimeError:
+        notify_session_expired(account)
+        raise
+
+    username = get_username(session) if interactive else get_username_non_interactive(session)
+    logger.info("run_enrich: usuario=%s, proxy=%s, refresh_days=%d", username, bool(proxy), CONTACT_REFRESH_DAYS)
+
+    _run_safety_checks(username=username, interactive=interactive)
+
+    # Recuperar más slugs de los que finalmente visitaremos; algunos se saltarán
+    # por el skip inteligente, así que pedimos el doble para aprovechar el presupuesto.
+    daily_used = get_daily_count(username)
+    remaining_budget = max(0, MAX_CONTACTS_PER_DAY - daily_used)
+    fetch_limit = min(
+        (max_contacts_override or MAX_CONTACTS_PER_RUN) * 2,
+        remaining_budget * 2,
+        200,  # nunca pedir más de 200 a la vez
+    )
+
+    if remaining_budget <= 0:
+        print(f"ℹ️  Presupuesto diario agotado ({MAX_CONTACTS_PER_DAY} contactos/día).")
+        return
+
+    slugs = get_pending_slugs(username, limit=fetch_limit)
+    if not slugs:
+        stats = get_queue_stats(username)
+        print(f"ℹ️  No hay contactos pendientes en la cola. "
+              f"(done: {stats['done']}, total: {stats['total']})")
+        print("   Ejecuta '--mode index' para reindexar las conexiones.")
+        return
+
+    started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    new_count = updated_count = skipped_count = error_count = visited = 0
+    run_limit = max_contacts_override or MAX_CONTACTS_PER_RUN
+
+    driver = _create_driver_with_cookies(session, proxy=proxy)
+    if not driver:
+        logger.error("run_enrich: no se pudo crear el WebDriver")
+        print("❌ No se pudo abrir el navegador. Revisa la sesión.")
+        return
+
+    import random
+
+    try:
+        for slug in slugs:
+            # Parar si ya alcanzamos el límite de visitas reales de esta ejecución
+            # o si agotamos el presupuesto diario
+            if visited >= run_limit or visited >= remaining_budget:
+                break
+
+            # ── Skip inteligente ──────────────────────────────────────────────
+            if contact_exists(username, slug):
+                days = days_since_last_scrape(username, slug)
+                if days is not None and days < CONTACT_REFRESH_DAYS:
+                    mark_queue_done(username, slug)
+                    skipped_count += 1
+                    logger.debug("skip %s (hace %.1f días)", slug, days)
+                    continue  # no cuenta contra el presupuesto ni visita el perfil
+
+            # ── Visita real del perfil ────────────────────────────────────────
+            print(f"   [{visited + 1}/{run_limit}] {slug}", end="\r", flush=True)
+            try:
+                data = _enrich_connection_from_profile(driver, slug)
+                result = upsert_contact(username, data)
+                mark_queue_done(username, slug)
+                visited += 1
+                if result == "inserted":
+                    new_count += 1
+                else:
+                    updated_count += 1
+            except Exception as exc:
+                logger.warning("run_enrich: error en %s: %s", slug, exc)
+                mark_queue_error(username, slug, str(exc))
+                error_count += 1
+                visited += 1  # también cuenta: se hizo una petición
+
+            # Pausa anti-detección (no pausar tras el último)
+            if visited < run_limit and visited < remaining_budget:
+                pause = random.uniform(4.0, 9.0)
+                logger.debug("Pausa %.1fs antes del siguiente perfil", pause)
+                time.sleep(pause)
+
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+    print()  # nueva línea tras el \r
+    finished_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    total_scraped = new_count + updated_count
+    insert_run(
+        username=username,
+        started_at=started_at,
+        finished_at=finished_at,
+        contacts_scraped=total_scraped,
+        contacts_new=new_count,
+        contacts_updated=updated_count,
+    )
+    update_account_last_run(username)
+    stats = get_queue_stats(username)
+    logger.info(
+        "run_enrich finalizado: new=%d updated=%d skipped=%d error=%d",
+        new_count, updated_count, skipped_count, error_count,
+    )
+    notify_daily_summary(
+        account=account or username,
+        new_count=new_count,
+        updated_count=updated_count,
+        skipped_count=skipped_count,
+        error_count=error_count,
+        queue_pending=stats.get("pending", 0),
+    )
+    print(f"✅ Enriquecimiento completado: {new_count} nuevos, "
+          f"{updated_count} actualizados, {skipped_count} saltados (frescos), "
+          f"{error_count} errores.")
+    print(f"   Cola → pending: {stats['pending']}, done: {stats['done']}, "
+          f"error: {stats['error']}, total: {stats['total']}")
+
+    on_block = getattr(session, "on_block", False)
+    if on_block:
+        _write_cooldown()
+        notify_block(account=account or username, cooldown_hours=COOLDOWN_HOURS_AFTER_429)
+        print(f"\n⚠️  LinkedIn limitó la sesión. Cooldown de "
+              f"{COOLDOWN_HOURS_AFTER_429} h activado.")
+
+
+# ── Modo LEGACY (compatibilidad con el flujo original) ────────────────────────
 
 def run_scrape(
     interactive: bool = True,
     dry_run: bool = False,
     max_contacts_override: int | None = None,
+    account: Optional[str] = None,
 ) -> None:
     """
-    Ejecuta el scraping de conexiones (perfil + contactos).
-    - interactive=True: como main(), puede pedir URL por teclado si no hay usuario.
-    - interactive=False: no pide input; usa usuario de la API o LINKEDIN_PROFILE_URL (sino, lanza).
-    - dry_run=True: solo comprueba cooldown e intervalo mínimo; no conecta ni scrapea.
-    - max_contacts_override: si no es None, usa este límite en lugar de MAX_CONTACTS.
-    Registra cada ejecución en la tabla runs para el viewer.
+    Flujo original (perfil + conexiones como CSV).
+    Se mantiene para compatibilidad con invocaciones directas y tests existentes.
+
+    account: slug de LinkedIn de la cuenta a usar (None = cuenta por defecto).
     """
     setup_logging()
     if not interactive:
@@ -167,57 +444,51 @@ def run_scrape(
     if _check_cooldown():
         try:
             with open(COOLDOWN_FILE) as f:
-                until = float(f.read().strip())
-            until_dt = datetime.fromtimestamp(until).strftime("%Y-%m-%d %H:%M")
+                until_dt = datetime.fromtimestamp(float(f.read())).strftime("%Y-%m-%d %H:%M")
         except (ValueError, OSError):
-            until_dt = "24-48 h"
-        msg = (
-            f"LinkedIn devolvió 429 en una ejecución anterior. No se hará ninguna petición hasta después de: {until_dt}"
-        )
-        logger.warning("Cooldown activo: %s", until_dt)
+            until_dt = f"{COOLDOWN_HOURS_AFTER_429} h"
+        msg = f"Cooldown activo hasta: {until_dt}"
+        logger.warning(msg)
         print(f"⚠️  {msg}")
         if interactive:
             sys.exit(0)
         raise RuntimeError(msg)
 
     if _check_min_interval():
-        try:
-            with open(LAST_RUN_FILE) as f:
-                last = float(f.read().strip())
-            next_ok = last + MIN_HOURS_BETWEEN_RUNS * 3600
-            next_dt = datetime.fromtimestamp(next_ok).strftime("%Y-%m-%d %H:%M")
-        except (ValueError, OSError):
-            next_dt = f"en {MIN_HOURS_BETWEEN_RUNS} horas"
-        msg = f"Solo se permite una ejecución cada {MIN_HOURS_BETWEEN_RUNS} h. Próxima permitida: {next_dt}"
-        logger.warning("Intervalo mínimo no cumplido: %s", next_dt)
+        msg = f"Solo se permite una ejecución cada {MIN_HOURS_BETWEEN_RUNS} h."
+        logger.warning(msg)
         print(f"⚠️  {msg}")
         if interactive:
             sys.exit(0)
         raise RuntimeError(msg)
 
     if dry_run:
-        logger.info("Dry-run: cooldown e intervalo OK, no se ejecuta el scrape")
+        logger.info("Dry-run: cooldown e intervalo OK")
         print("✅ Dry-run: cooldown e intervalo OK. No se ha ejecutado el scrape.")
         return
 
-    account = init_client()
-    username = get_username(account) if interactive else get_username_non_interactive(account)
-    max_contacts = max(1, max_contacts_override) if max_contacts_override is not None else MAX_CONTACTS
+    proxy = get_account_proxy(account) if account else None
+    try:
+        session = init_client(account=account, proxy=proxy)
+    except RuntimeError:
+        notify_session_expired(account)
+        raise
+    username = get_username(session) if interactive else get_username_non_interactive(session)
+    max_contacts = max(1, max_contacts_override) if max_contacts_override is not None else MAX_CONTACTS_PER_RUN
     logger.info("Usuario: %s, max_contacts: %s", username, max_contacts)
 
     started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     os.makedirs("output", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
 
-    perfil, conexiones = scrape_profile_and_connections(account, username, max_contacts)
+    perfil, conexiones = scrape_profile_and_connections(session, username, max_contacts)
 
     finished_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     contacts_count = len(conexiones) if not conexiones.empty else 0
-    on_block = getattr(account, "on_block", False)
+    on_block = getattr(session, "on_block", False)
     if conexiones.empty and not on_block:
-        logger.warning(
-            "Ejecución sospechosa: 0 conexiones sin 429/redirects. Revisar sesión o cambios en LinkedIn."
-        )
+        logger.warning("0 conexiones sin bloqueo. Revisar sesión.")
+
     insert_run(
         username=username,
         started_at=started_at,
@@ -241,51 +512,77 @@ def run_scrape(
             print(conexiones[cols].head(10))
     else:
         print("ℹ️  No se obtuvieron conexiones")
-        if not on_block:
-            print("   (Si esperabas conexiones, revisa la sesión o si LinkedIn ha cambiado.)")
 
     if on_block:
         _write_cooldown()
-        print("")
-        print("⚠️  LinkedIn ha limitado la sesión (429 o redirecciones en bucle).")
-        print("   Se ha guardado el estado: en la próxima ejecución no se hará ninguna petición")
-        print(f"   hasta que pasen {COOLDOWN_HOURS_AFTER_429} horas (configurable con COOLDOWN_HOURS_AFTER_429 en .env).")
-        print("   Para reducir más el riesgo, usa MAX_CONTACTS más bajo o sube SLEEP_BETWEEN_CONNECTIONS.")
-        print("")
-    logger.info("run_scrape finalizado: %s conexiones, on_block=%s", contacts_count, on_block)
+        notify_block(account=account or username, cooldown_hours=COOLDOWN_HOURS_AFTER_429)
+        print(f"\n⚠️  LinkedIn limitó la sesión. Cooldown de {COOLDOWN_HOURS_AFTER_429} h activado.")
+
+    update_account_last_run(username)
+    logger.info("run_scrape finalizado: %d conexiones, on_block=%s", contacts_count, on_block)
 
 
-def main():
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Scraping de conexiones de LinkedIn (perfil + contactos)."
+        description="Scraper de conexiones de LinkedIn."
     )
     parser.add_argument(
-        "--max-contacts",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Límite de conexiones a scrapear (sobrescribe MAX_CONTACTS/.env).",
+        "--mode",
+        choices=["index", "enrich", "legacy"],
+        default="legacy",
+        help=(
+            "index  → recopilar slugs de conexiones en la cola (Fase A).\n"
+            "enrich → enriquecer contactos pendientes con datos completos (Fase B).\n"
+            "legacy → flujo original perfil+CSV (defecto)."
+        ),
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Solo comprobar cooldown e intervalo mínimo; no conectar ni scrapear.",
+        "--max-contacts", type=int, default=None, metavar="N",
+        help="Límite de contactos por ejecución (sobrescribe MAX_CONTACTS_PER_RUN).",
     )
     parser.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="No abrir navegador si la sesión ha caducado; fallar y avisar (útil en cron).",
+        "--dry-run", action="store_true",
+        help="Solo comprobar controles de seguridad; no conectar ni scrapear.",
+    )
+    parser.add_argument(
+        "--no-browser", action="store_true",
+        help="No abrir navegador si la sesión caduca (útil en cron/servidor).",
+    )
+    parser.add_argument(
+        "--account", type=str, default=None, metavar="SLUG",
+        help=(
+            "Cuenta LinkedIn a usar (slug, ej. 'miquel-roca-mascaros'). "
+            "La sesión se cargará desde sessions/{slug}.pkl. "
+            "Sin este argumento se usa la sesión por defecto (session.pkl)."
+        ),
     )
     args = parser.parse_args()
 
     if args.no_browser:
         os.environ["LINKEDIN_NO_BROWSER"] = "1"
     interactive = not args.no_browser
-    run_scrape(
-        interactive=interactive,
-        dry_run=args.dry_run,
-        max_contacts_override=args.max_contacts,
-    )
+
+    if args.dry_run:
+        run_scrape(interactive=interactive, dry_run=True, account=args.account)
+        return
+
+    if args.mode == "index":
+        run_index(interactive=interactive, account=args.account)
+    elif args.mode == "enrich":
+        run_enrich(
+            interactive=interactive,
+            max_contacts_override=args.max_contacts,
+            account=args.account,
+        )
+    else:
+        run_scrape(
+            interactive=interactive,
+            dry_run=False,
+            max_contacts_override=args.max_contacts,
+            account=args.account,
+        )
 
 
 if __name__ == "__main__":

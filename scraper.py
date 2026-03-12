@@ -46,6 +46,7 @@ BROWSER_PROFILE_WAIT      = _get_env_int("BROWSER_PROFILE_WAIT", 10)
 SLEEP_BETWEEN_CONNECTIONS = _get_env_float("SLEEP_BETWEEN_CONNECTIONS", 6.0)
 MAX_CONTACTS_CAP          = _get_env_int("MAX_CONTACTS_CAP", 50)
 SESSION_FILE              = "session.pkl"
+SESSIONS_DIR              = os.getenv("SESSIONS_DIR", "sessions")
 # Muestra el navegador si HEADLESS=false en .env (útil para depuración)
 HEADLESS                  = os.getenv("HEADLESS", "true").lower() != "false"
 
@@ -165,7 +166,89 @@ _STEALTH_SCRIPT = """
 """
 
 
-def _make_chrome_options(headless: bool = True) -> ChromeOptions:
+def _parse_proxy(proxy_str: str) -> dict:
+    """
+    Parsea un proxy en cualquiera de estos formatos:
+      - host:port
+      - http://host:port
+      - http://user:pass@host:port
+      - user:pass@host:port
+
+    Devuelve un dict con claves: host, port, user (opcional), password (opcional).
+    """
+    s = proxy_str.strip()
+    if s.startswith("http://") or s.startswith("https://"):
+        s = s.split("://", 1)[1]
+    user = password = None
+    if "@" in s:
+        credentials, hostport = s.rsplit("@", 1)
+        if ":" in credentials:
+            user, password = credentials.split(":", 1)
+        else:
+            user = credentials
+    else:
+        hostport = s
+    if ":" in hostport:
+        host, port = hostport.rsplit(":", 1)
+    else:
+        host, port = hostport, "8080"
+    return {"host": host, "port": port, "user": user, "password": password}
+
+
+def _create_proxy_auth_extension(host: str, port: str, user: str, password: str) -> str:
+    """
+    Crea una extensión de Chrome temporal (.zip) para proxies con autenticación.
+    Chrome no admite credenciales en --proxy-server, pero sí a través de una
+    extensión que intercepta el evento onAuthRequired.
+    Devuelve la ruta al archivo .zip creado en el directorio temporal del sistema.
+    """
+    import tempfile
+    import zipfile
+
+    manifest = """{
+  "version": "1.0.0",
+  "manifest_version": 2,
+  "name": "Scraper Proxy Auth",
+  "permissions": [
+    "proxy", "tabs", "unlimitedStorage", "storage",
+    "<all_urls>", "webRequest", "webRequestBlocking"
+  ],
+  "background": {"scripts": ["background.js"]},
+  "minimum_chrome_version": "22.0.0"
+}"""
+
+    background = f"""var config = {{
+  mode: "fixed_servers",
+  rules: {{
+    singleProxy: {{ scheme: "http", host: "{host}", port: parseInt("{port}") }},
+    bypassList: ["localhost", "127.0.0.1"]
+  }}
+}};
+chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+chrome.webRequest.onAuthRequired.addListener(
+  function(details) {{
+    return {{ authCredentials: {{ username: "{user}", password: "{password}" }} }};
+  }},
+  {{urls: ["<all_urls>"]}},
+  ["blocking"]
+);"""
+
+    ext_path = os.path.join(tempfile.gettempdir(), f"scraper_proxy_{host}_{port}.zip")
+    with zipfile.ZipFile(ext_path, "w") as zf:
+        zf.writestr("manifest.json", manifest)
+        zf.writestr("background.js", background)
+    return ext_path
+
+
+def _make_chrome_options(headless: bool = True, proxy: Optional[str] = None) -> ChromeOptions:
+    """
+    Construye las opciones de Chrome con soporte opcional de proxy.
+
+    proxy formato:
+      - 'host:port'              → proxy sin autenticación
+      - 'user:pass@host:port'    → proxy con autenticación (genera extensión temporal)
+      - None                     → sin proxy
+    """
     opts = ChromeOptions()
     if headless:
         opts.add_argument("--headless=new")
@@ -176,6 +259,24 @@ def _make_chrome_options(headless: bool = True) -> ChromeOptions:
     opts.add_argument(f"--user-agent={_CHROME_UA}")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
+
+    if proxy:
+        try:
+            p = _parse_proxy(proxy)
+            if p["user"] and p["password"]:
+                # Proxy con auth: necesita extensión (Chrome no admite user:pass en --proxy-server)
+                ext_path = _create_proxy_auth_extension(
+                    p["host"], p["port"], p["user"], p["password"]
+                )
+                opts.add_extension(ext_path)
+                _log.info("Proxy con auth configurado via extensión: %s:%s", p["host"], p["port"])
+            else:
+                # Proxy sin auth: --proxy-server es suficiente
+                opts.add_argument(f"--proxy-server=http://{p['host']}:{p['port']}")
+                _log.info("Proxy sin auth configurado: %s:%s", p["host"], p["port"])
+        except Exception as e:
+            _log.warning("No se pudo configurar el proxy '%s': %s — continuando sin proxy", proxy, e)
+
     return opts
 
 
@@ -295,27 +396,48 @@ def _is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
-def init_client() -> LinkedInSession:
+def session_file_for(account: Optional[str] = None) -> str:
+    """
+    Devuelve la ruta al archivo de sesión para la cuenta indicada.
+    - Sin cuenta: usa session.pkl (comportamiento original).
+    - Con cuenta: usa sessions/{account}.pkl creando el directorio si hace falta.
+    """
+    if not account:
+        return SESSION_FILE
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", account)
+    return os.path.join(SESSIONS_DIR, f"{safe}.pkl")
+
+
+def init_client(account: Optional[str] = None, proxy: Optional[str] = None) -> LinkedInSession:
     """
     Inicializa la sesión de LinkedIn usando Selenium puro.
 
+    account: nombre de la cuenta (slug de LinkedIn). Si se indica, las cookies
+             se guardan en sessions/{account}.pkl en lugar de session.pkl.
+    proxy:   proxy para esta cuenta. Formato 'host:port' o 'user:pass@host:port'.
+             Si es None, no se usa proxy.
+
     Flujo:
-    1. Carga cookies de session.pkl (si existen).
-    2. Abre Chrome headless, inyecta cookies y comprueba si sigue logueado.
+    1. Carga cookies del archivo de sesión correspondiente (si existen).
+    2. Abre Chrome headless (con proxy si aplica), inyecta cookies y comprueba sesión.
     3. Si la sesión ha caducado (o no hay cookies):
        a. En modo interactivo: abre Chrome visible para que el usuario haga login.
        b. En modo no interactivo (cron / --no-browser): lanza RuntimeError.
-    4. Guarda las cookies nuevas en session.pkl y devuelve la sesión.
+    4. Guarda las cookies nuevas y devuelve la sesión.
     """
-    print("🔐 Conectando a LinkedIn...")
+    session_path = session_file_for(account)
+    account_label = f" [{account}]" if account else ""
+    proxy_label = f" (proxy: {proxy.split('@')[-1] if proxy and '@' in proxy else proxy})" if proxy else ""
+    print(f"🔐 Conectando a LinkedIn{account_label}{proxy_label}...")
     no_browser = os.environ.get("LINKEDIN_NO_BROWSER", "").strip() in ("1", "true", "yes")
-    cookies = _load_cookies()
+    cookies = _load_cookies(session_path)
 
     # Paso 1: comprobar si las cookies guardadas siguen siendo válidas
     if cookies:
         driver = None
         try:
-            driver = webdriver.Chrome(options=_make_chrome_options(headless=True))
+            driver = webdriver.Chrome(options=_make_chrome_options(headless=True, proxy=proxy))
             _apply_stealth(driver)
             driver.get("https://www.linkedin.com")
             time.sleep(random.uniform(1.5, 2.5))
@@ -330,8 +452,8 @@ def init_client() -> LinkedInSession:
                 if username:
                     _log.info("Username detectado durante init_client: %s", username)
                 fresh_cookies = _driver_cookies_to_list(driver)
-                _save_cookies(fresh_cookies)
-                _log.info("Sesión válida cargada desde %s", SESSION_FILE)
+                _save_cookies(fresh_cookies, session_path)
+                _log.info("Sesión válida cargada desde %s", session_path)
                 print(f"✅ Sesión activa{f' ({username})' if username else ''}.")
                 return LinkedInSession(fresh_cookies, username=username)
             else:
@@ -364,7 +486,7 @@ def init_client() -> LinkedInSession:
     print("   (Completa el login, incluida cualquier verificación en dos pasos o captcha.)")
     driver = None
     try:
-        driver = webdriver.Chrome(options=_make_chrome_options(headless=False))
+        driver = webdriver.Chrome(options=_make_chrome_options(headless=False, proxy=proxy))
         _apply_stealth(driver)
         driver.get("https://www.linkedin.com/login")
         input("\n   Pulsa Enter cuando hayas iniciado sesión y estés en LinkedIn (Feed o perfil)...\n")
@@ -376,8 +498,8 @@ def init_client() -> LinkedInSession:
         if username:
             _log.info("Username detectado tras login: %s", username)
         fresh_cookies = _driver_cookies_to_list(driver)
-        _save_cookies(fresh_cookies)
-        _log.info("Login completado, cookies guardadas en %s", SESSION_FILE)
+        _save_cookies(fresh_cookies, session_path)
+        _log.info("Login completado, cookies guardadas en %s", session_path)
         print(f"✅ Login completado y sesión guardada{f' ({username})' if username else ''}.")
         return LinkedInSession(fresh_cookies, username=username)
     except RuntimeError:
@@ -388,6 +510,113 @@ def init_client() -> LinkedInSession:
             "complétala antes de pulsar Enter. Vuelve a ejecutar el script si hace falta."
         )
         raise RuntimeError(f"Error durante el login: {e}") from e
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
+# ── Login automático con credenciales ─────────────────────────────────────────
+
+def login_with_credentials(
+    account: str,
+    email: str,
+    password: str,
+    proxy: Optional[str] = None,
+) -> dict:
+    """
+    Realiza el login automatizado en LinkedIn con email y contraseña.
+
+    Abre Chrome en modo visible (headless=False) para evitar detecciones anti-bot
+    en la página de login. Rellena los campos de forma humanizada (tecla a tecla
+    con delays aleatorios) y comprueba el resultado.
+
+    Retorna un dict con una de estas claves "status":
+      "ok"                 → sesión guardada en sessions/{account}.pkl
+      "needs_verification" → LinkedIn pide 2FA / email-code / captcha (no se puede automatizar)
+      "wrong_credentials"  → email o contraseña incorrectos
+      "error"              → error inesperado (mensaje en "message")
+    """
+    from selenium.webdriver.common.by import By
+
+    session_path = session_file_for(account)
+    driver = None
+    try:
+        driver = webdriver.Chrome(options=_make_chrome_options(headless=False, proxy=proxy))
+        _apply_stealth(driver)
+        driver.get("https://www.linkedin.com/login")
+        time.sleep(random.uniform(2.0, 3.5))
+
+        # Rellenar email tecla a tecla
+        email_field = driver.find_element(By.ID, "username")
+        email_field.clear()
+        for char in email:
+            email_field.send_keys(char)
+            time.sleep(random.uniform(0.04, 0.11))
+        time.sleep(random.uniform(0.4, 0.9))
+
+        # Rellenar contraseña tecla a tecla
+        pass_field = driver.find_element(By.ID, "password")
+        pass_field.clear()
+        for char in password:
+            pass_field.send_keys(char)
+            time.sleep(random.uniform(0.04, 0.10))
+        time.sleep(random.uniform(0.4, 0.8))
+
+        # Clic en "Sign in"
+        driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+
+        # Esperar redirección (puede tardar varios segundos)
+        time.sleep(random.uniform(5.0, 7.0))
+        current_url = driver.current_url
+
+        # ── Sesión activa ──
+        if _is_logged_in(driver):
+            username = _detect_username_from_driver(driver)
+            fresh_cookies = _driver_cookies_to_list(driver)
+            _save_cookies(fresh_cookies, session_path)
+            _log.info("Login automático OK para cuenta %s → %s", account, session_path)
+            return {"status": "ok", "detected_username": username or account}
+
+        # ── LinkedIn pide verificación adicional (2FA, código por email, captcha) ──
+        verification_keywords = ("checkpoint", "verification", "challenge", "captcha", "pin")
+        if any(kw in current_url.lower() for kw in verification_keywords):
+            _log.warning("Login requiere verificación para %s: %s", account, current_url)
+            return {
+                "status": "needs_verification",
+                "message": (
+                    "LinkedIn requiere verificación adicional (código por email, "
+                    "teléfono o captcha). Completa el proceso manualmente ejecutando "
+                    f"'python main.py --account={account}' en el servidor."
+                ),
+            }
+
+        # ── Credenciales incorrectas ──
+        try:
+            page_src = driver.page_source.lower()
+        except Exception:
+            page_src = ""
+        if "/login" in current_url or "uas/login" in current_url:
+            if any(kw in page_src for kw in ("incorrect", "wrong", "invalid", "error")):
+                return {
+                    "status": "wrong_credentials",
+                    "message": "Email o contraseña incorrectos. Revisa los datos e inténtalo de nuevo.",
+                }
+            return {
+                "status": "wrong_credentials",
+                "message": "No se pudo iniciar sesión. Comprueba el email y la contraseña.",
+            }
+
+        return {
+            "status": "error",
+            "message": f"Estado desconocido tras el login. URL: {current_url}",
+        }
+
+    except Exception as exc:
+        _log.error("Error en login_with_credentials para %s: %s", account, exc)
+        return {"status": "error", "message": str(exc)}
     finally:
         if driver:
             try:
@@ -797,16 +1026,21 @@ def _extract_internal_id_from_html(html: str, public_id: Optional[str] = None) -
 
 # ── Driver con cookies ─────────────────────────────────────────────────────────
 
-def _create_driver_with_cookies(session: LinkedInSession, headless: Optional[bool] = None):
+def _create_driver_with_cookies(
+    session: LinkedInSession,
+    headless: Optional[bool] = None,
+    proxy: Optional[str] = None,
+):
     """
     Crea un WebDriver con las cookies de la sesión ya inyectadas.
     Si headless=None usa la variable de entorno HEADLESS (por defecto True).
+    proxy: 'host:port' o 'user:pass@host:port' para enrutar el tráfico por un proxy.
     Aplica el script stealth antes de la primera navegación.
     Devuelve el driver listo para navegar, o None si no se puede crear.
     """
     use_headless = HEADLESS if headless is None else headless
     try:
-        driver = webdriver.Chrome(options=_make_chrome_options(headless=use_headless))
+        driver = webdriver.Chrome(options=_make_chrome_options(headless=use_headless, proxy=proxy))
     except Exception as e:
         _log.error("No se pudo crear el WebDriver: %s", e)
         return None
@@ -1358,3 +1592,114 @@ def scrape_profile_and_connections(
             pass
 
     return perfil, conexiones
+
+
+# ── Fase A: recopilar índice de slugs ──────────────────────────────────────────
+
+def collect_all_slugs(session: LinkedInSession, proxy: Optional[str] = None) -> List[str]:
+    """
+    Fase A del scraping en producción: recorre la página de conexiones y la
+    búsqueda de primer grado para recopilar TODOS los slugs disponibles
+    sin visitar ningún perfil individual (rápido, sin enriquecimiento).
+
+    proxy: proxy a usar para esta sesión ('host:port' o 'user:pass@host:port').
+    Devuelve la lista de slugs únicos encontrados.
+    """
+    _log.info("collect_all_slugs: iniciando recopilación del índice de conexiones")
+    driver = _create_driver_with_cookies(session, proxy=proxy)
+    if not driver:
+        _log.error("collect_all_slugs: no se pudo crear el WebDriver")
+        return []
+
+    # Slugs propios a excluir (el perfil del usuario logueado y strings no-slug)
+    OWN_SLUG = (session.username or "").lower()
+    EXCLUDED = {"me", "login", "feed", "jobs", "messaging", "notifications",
+                "search", "mynetwork", "in", "company", "school", ""}
+
+    seen: set = set()
+    slugs: List[str] = []
+
+    def _harvest_page() -> int:
+        """Extrae slugs de todos los enlaces /in/ visibles en la página actual."""
+        new = 0
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
+        for a in links:
+            try:
+                href = a.get_attribute("href") or ""
+                m = re.search(r"linkedin\.com/in/([^/?#]+)", href)
+                if not m:
+                    continue
+                slug = m.group(1).rstrip("/").lower()
+                if not slug or len(slug) < 2 or slug in seen:
+                    continue
+                if slug in EXCLUDED or slug == OWN_SLUG:
+                    continue
+                seen.add(slug)
+                slugs.append(slug)
+                new += 1
+            except Exception:
+                continue
+        return new
+
+    try:
+        # ── 1. Página de conexiones ────────────────────────────────────────────
+        _log.info("collect_all_slugs: cargando %s", _CONNECTIONS_URL)
+        driver.get(_CONNECTIONS_URL)
+        time.sleep(random.uniform(3.0, 5.0))
+
+        if any(kw in driver.current_url for kw in ("authwall", "/login", "checkpoint")):
+            _log.warning("collect_all_slugs: sesión no válida, redirigido a login")
+            session.on_block = True
+            return []
+
+        no_progress = 0
+        for _ in range(60):  # máx. 60 scrolls (~600 conexiones aprox.)
+            prev = len(slugs)
+            _harvest_page()
+            if len(slugs) == prev:
+                no_progress += 1
+                if no_progress >= 5:
+                    _log.info("collect_all_slugs: sin nuevos slugs tras 5 rondas en /mynetwork/")
+                    break
+                time.sleep(random.uniform(1.5, 3.0))
+            else:
+                no_progress = 0
+
+            steps = random.randint(3, 5)
+            for _ in range(steps):
+                driver.execute_script(f"window.scrollBy(0, {random.randint(300, 600)});")
+                time.sleep(random.uniform(0.15, 0.4))
+            time.sleep(random.uniform(0.8, 1.8))
+
+        _log.info("collect_all_slugs: %d slugs tras /mynetwork/", len(slugs))
+
+        # ── 2. Búsqueda de primer grado (complementa /mynetwork/) ────────────
+        _log.info("collect_all_slugs: cargando búsqueda de primer grado")
+        driver.get(_CONNECTIONS_SEARCH_URL)
+        time.sleep(random.uniform(3.5, 5.5))
+
+        no_progress = 0
+        for _ in range(40):
+            prev = len(slugs)
+            _harvest_page()
+            if len(slugs) == prev:
+                no_progress += 1
+                if no_progress >= 5:
+                    break
+                time.sleep(random.uniform(1.5, 2.5))
+            else:
+                no_progress = 0
+            driver.execute_script(f"window.scrollBy(0, {random.randint(400, 700)});")
+            time.sleep(random.uniform(1.0, 2.0))
+
+        _log.info("collect_all_slugs: %d slugs totales recopilados", len(slugs))
+
+    except Exception as e:
+        _log.error("collect_all_slugs: error inesperado: %s", e)
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+    return slugs

@@ -26,6 +26,7 @@ from scraper import (
     _is_valid_phone,
     _is_interactive,
     _is_logged_in,
+    collect_all_slugs,
     scrape_connections,
     scrape_connections_selenium,
     scrape_profile_and_connections,
@@ -696,3 +697,124 @@ def test_enrich_connection_from_profile_sin_json_ld():
     assert result["name"] is None
     assert result["profile_link"] == "https://www.linkedin.com/in/sin-datos/"
     assert list(result.keys()) == COLUMNAS_CSV_CONEXIONES
+
+
+# ── collect_all_slugs ─────────────────────────────────────────────────────────
+
+def test_collect_all_slugs_devuelve_lista_de_slugs(fake_cookies):
+    """Recopila slugs de /mynetwork/ y de la búsqueda sin enriquecer perfiles."""
+    session = LinkedInSession(fake_cookies, username="yo")
+    mock_driver = MagicMock()
+    mock_driver.current_url = "https://www.linkedin.com/mynetwork/catch-up/connections/"
+
+    links_mynetwork = []
+    for slug in ["alice-dev", "bob-prod", "carlos-qa"]:
+        a = MagicMock()
+        a.get_attribute.return_value = f"https://www.linkedin.com/in/{slug}/"
+        links_mynetwork.append(a)
+
+    links_busqueda = []
+    for slug in ["diana-pm", "elena-ux"]:
+        a = MagicMock()
+        a.get_attribute.return_value = f"https://www.linkedin.com/in/{slug}/"
+        links_busqueda.append(a)
+
+    call_count = {"n": 0}
+
+    def fake_find_elements(by, selector):
+        call_count["n"] += 1
+        if call_count["n"] <= 6:   # primeras rondas = /mynetwork/
+            return links_mynetwork
+        return links_busqueda
+
+    mock_driver.find_elements.side_effect = fake_find_elements
+    mock_driver.execute_script.return_value = None
+
+    with patch("scraper._create_driver_with_cookies", return_value=mock_driver):
+        with patch("scraper.time.sleep"):
+            slugs = collect_all_slugs(session)
+
+    assert "alice-dev" in slugs
+    assert "bob-prod" in slugs
+    assert "carlos-qa" in slugs
+    assert len(slugs) == len(set(slugs))  # sin duplicados
+
+
+def test_collect_all_slugs_excluye_slug_propio(fake_cookies):
+    """El slug del propio usuario no debe aparecer en los resultados."""
+    session = LinkedInSession(fake_cookies, username="yo-mismo")
+    mock_driver = MagicMock()
+    mock_driver.current_url = "https://www.linkedin.com/mynetwork/catch-up/connections/"
+
+    # Devuelve el propio slug + uno ajeno
+    a_propio = MagicMock()
+    a_propio.get_attribute.return_value = "https://www.linkedin.com/in/yo-mismo/"
+    a_ajeno = MagicMock()
+    a_ajeno.get_attribute.return_value = "https://www.linkedin.com/in/otra-persona/"
+    mock_driver.find_elements.return_value = [a_propio, a_ajeno]
+    mock_driver.execute_script.return_value = None
+
+    with patch("scraper._create_driver_with_cookies", return_value=mock_driver):
+        with patch("scraper.time.sleep"):
+            slugs = collect_all_slugs(session)
+
+    assert "yo-mismo" not in slugs
+    assert "otra-persona" in slugs
+
+
+def test_collect_all_slugs_on_block_si_redirige_a_login(fake_cookies):
+    """Si LinkedIn redirige a /login, marca on_block y devuelve lista vacía."""
+    session = LinkedInSession(fake_cookies)
+    mock_driver = MagicMock()
+    mock_driver.current_url = "https://www.linkedin.com/login"
+    mock_driver.find_elements.return_value = []
+    mock_driver.execute_script.return_value = None
+
+    with patch("scraper._create_driver_with_cookies", return_value=mock_driver):
+        with patch("scraper.time.sleep"):
+            slugs = collect_all_slugs(session)
+
+    assert slugs == []
+    assert session.on_block is True
+
+
+def test_collect_all_slugs_sin_driver(fake_cookies):
+    """Si no se puede crear el driver, devuelve lista vacía."""
+    session = LinkedInSession(fake_cookies)
+    with patch("scraper._create_driver_with_cookies", return_value=None):
+        slugs = collect_all_slugs(session)
+    assert slugs == []
+
+
+# ── _parse_proxy ──────────────────────────────────────────────────────────────
+
+from scraper import _parse_proxy
+
+def test_parse_proxy_sin_auth():
+    p = _parse_proxy("proxy.host:8080")
+    assert p["host"] == "proxy.host"
+    assert p["port"] == "8080"
+    assert p["user"] is None
+    assert p["password"] is None
+
+
+def test_parse_proxy_con_auth():
+    p = _parse_proxy("user:pass@proxy.host:8080")
+    assert p["host"] == "proxy.host"
+    assert p["port"] == "8080"
+    assert p["user"] == "user"
+    assert p["password"] == "pass"
+
+
+def test_parse_proxy_con_http_prefix():
+    p = _parse_proxy("http://proxy.host:3128")
+    assert p["host"] == "proxy.host"
+    assert p["port"] == "3128"
+    assert p["user"] is None
+
+
+def test_parse_proxy_con_auth_y_http():
+    p = _parse_proxy("http://admin:secret@proxy.host:9000")
+    assert p["host"] == "proxy.host"
+    assert p["user"] == "admin"
+    assert p["password"] == "secret"
