@@ -376,30 +376,30 @@
       <label class="form-label">Slug de LinkedIn <span style="color:#888;font-weight:400">(opcional)</span></label>
       <input type="text" class="form-input" id="f-username" placeholder="miquel-roca-mascaros" autocomplete="off">
       <p class="form-hint">Parte final de tu URL: linkedin.com/in/<strong>tu-slug</strong><br>Si lo dejas vacío se detecta automáticamente.</p>
-    </div>
+        </div>
     <hr class="form-sep">
     <div class="form-group">
       <label class="form-label">Email <span class="req">*</span></label>
       <input type="email" class="form-input" id="f-email" placeholder="correo@ejemplo.com" autocomplete="off">
-    </div>
+      </div>
     <div class="form-group">
       <label class="form-label">Contraseña <span class="req">*</span></label>
       <input type="password" class="form-input" id="f-password" placeholder="Tu contraseña de LinkedIn" autocomplete="new-password">
       <p class="form-hint">Solo se usa para el login. No se guarda en la base de datos.</p>
-    </div>
+        </div>
     <hr class="form-sep">
     <div class="form-group">
       <label class="form-label">Proxy <span style="color:#888;font-weight:400">(opcional)</span></label>
       <input type="text" class="form-input" id="f-proxy" placeholder="usuario:contraseña@ip:puerto" autocomplete="off">
       <p class="form-hint">Formato: <code>host:puerto</code> sin auth, o <code>user:pass@host:puerto</code> con auth.</p>
-    </div>
+      </div>
     <div id="modal-msg-cuenta" class="login-banner"></div>
     <div class="modal-actions">
       <button class="btn btn-outline" id="modal-cancel">Cancelar</button>
       <button class="btn btn-blue"    id="modal-save">Iniciar sesión</button>
+      </div>
+      </div>
     </div>
-  </div>
-</div>
 
 <!-- ══════ MODAL: Editar proxy ══════ -->
 <div class="modal-backdrop" id="modal-proxy">
@@ -564,7 +564,7 @@ function renderAccounts(accounts) {
         <div class="acc-info">
           <div class="acc-name">${esc(acc.display_name || acc.username)}</div>
           <div class="acc-slug">@${esc(acc.username)}</div>
-        </div>
+          </div>
         <div class="acc-topbtns">
           <button class="btn-ghost" title="Editar proxy" data-edit-proxy="${esc(acc.username)}" data-current-proxy="${esc(acc.proxy||'')}">✏️</button>
           <button class="btn-ghost" title="Eliminar cuenta" data-del="${esc(acc.username)}">🗑</button>
@@ -685,14 +685,14 @@ $('modal-save').onclick = async () => {
     if (data.error) {
       setBanner('modal-msg-cuenta', 'err', data.error);
       $('modal-save').disabled = false; $('modal-save').textContent = 'Iniciar sesión';
-      return;
-    }
+    return;
+  }
     if (data.status === 'already_logged_in') {
       setBanner('modal-msg-cuenta', 'ok', `✅ ${data.message}`);
       loadAccounts();
       $('modal-save').disabled = false; $('modal-save').textContent = 'Iniciar sesión';
-      return;
-    }
+    return;
+  }
     setBanner('modal-msg-cuenta', 'progress', '⏳ Chrome se está abriendo. Esto puede tardar 15–30 s…');
     pollLoginStatus(data.poll_username || username);
   } catch (err) {
@@ -872,15 +872,15 @@ async function loadContacts() {
       return `<th data-col="${c.key}" data-sortable="${c.sortable}" class="${isActive ? 'sorted' : ''}" style="${cursor}">
         ${esc(c.label)}<span class="sort-arrow">${c.sortable ? arrow : ''}</span>
       </th>`;
-    }).join('') + '</tr>';
+  }).join('') + '</tr>';
 
     $('ct-thead').querySelectorAll('th[data-sortable="true"]').forEach(th => {
-      th.onclick = () => {
+    th.onclick = () => {
         if (CT.sort === th.dataset.col) CT.order = CT.order === 'asc' ? 'desc' : 'asc';
         else { CT.sort = th.dataset.col; CT.order = 'desc'; }
         CT.page = 1; loadContacts();
-      };
-    });
+    };
+  });
 
     // Filas
     if (!data.contacts.length) {

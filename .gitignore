@@ -2,8 +2,12 @@
 venv/
 output/
 __pycache__/
-session.pkl
+*.pkl
+*.pkl.bak
 .linkedin_429_cooldown
 .linkedin_last_run
 data/
 logs/
+sessions/
+*.pyc
+.DS_Store

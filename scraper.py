@@ -107,7 +107,7 @@ def _save_cookies(cookies: List[Dict], path: str = SESSION_FILE) -> None:
         with open(path, "wb") as f:
             pickle.dump({"cookies": cookies}, f)
         _log.info("Cookies guardadas en %s", path)
-    except Exception as e:
+                except Exception as e:
         _log.warning("No se pudo guardar cookies en %s: %s", path, e)
 
 
@@ -244,12 +244,22 @@ def _make_chrome_options(headless: bool = True, proxy: Optional[str] = None) -> 
     """
     Construye las opciones de Chrome con soporte opcional de proxy.
 
+    El binario de Chrome se puede sobreescribir con la variable de entorno
+    CHROME_BINARY. Útil en servidores ARM (Oracle Cloud) donde el binario
+    es 'chromium-browser' en lugar de 'google-chrome'.
+
     proxy formato:
       - 'host:port'              → proxy sin autenticación
       - 'user:pass@host:port'    → proxy con autenticación (genera extensión temporal)
       - None                     → sin proxy
     """
     opts = ChromeOptions()
+
+    # Binario personalizado (necesario en ARM con chromium-browser)
+    chrome_binary = os.environ.get("CHROME_BINARY", "").strip()
+    if chrome_binary:
+        opts.binary_location = chrome_binary
+
     if headless:
         opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
@@ -514,7 +524,7 @@ def init_client(account: Optional[str] = None, proxy: Optional[str] = None) -> L
         if driver:
             try:
                 driver.quit()
-            except Exception:
+        except Exception:
                 pass
 
 
@@ -656,12 +666,12 @@ def get_current_username(session: LinkedInSession) -> Optional[str]:
         return username
     except Exception as e:
         _log.warning("get_current_username (fallback driver) falló: %s", e)
-        return None
+            return None
     finally:
         if driver:
             try:
                 driver.quit()
-            except Exception:
+    except Exception:
                 pass
 
 
@@ -767,10 +777,10 @@ def _extract_person_from_any_script(html: str) -> Optional[Dict]:
             parsed = json.loads(content)
             items = parsed if isinstance(parsed, list) else [parsed]
             for item in items:
-                if isinstance(item, dict):
-                    row = _parse_person_from_json_ld(item)
-                    if row and (row.get("name") or row.get("position") or row.get("company")):
-                        return row
+                    if isinstance(item, dict):
+                        row = _parse_person_from_json_ld(item)
+                        if row and (row.get("name") or row.get("position") or row.get("company")):
+                            return row
         except (json.JSONDecodeError, TypeError):
             pass
     return None
@@ -860,7 +870,7 @@ def _extract_contact_info_from_overlay(driver, slug: str) -> Dict:
         # ── Emails: enlaces mailto: ───────────────────────────────────────────────
         emails = []
         for a in driver.find_elements(By.CSS_SELECTOR, "a[href^='mailto:']"):
-            href = a.get_attribute("href") or ""
+                href = a.get_attribute("href") or ""
             addr = href.replace("mailto:", "").strip()
             if addr and "@" in addr and "linkedin.com" not in addr and addr not in emails:
                 emails.append(addr)
@@ -887,8 +897,8 @@ def _extract_contact_info_from_overlay(driver, slug: str) -> Dict:
                     text = span.text.strip()
                     if _is_valid_phone(text) and text not in phones:
                         phones.append(text)
-            except Exception:
-                pass
+                    except Exception:
+                        pass
 
         # Fallback: si XPath no encontró nada, buscar en BeautifulSoup con regex sin anclas
         if not phones:
@@ -1044,7 +1054,7 @@ def _create_driver_with_cookies(
     use_headless = HEADLESS if headless is None else headless
     try:
         driver = webdriver.Chrome(options=_make_chrome_options(headless=use_headless, proxy=proxy))
-    except Exception as e:
+        except Exception as e:
         _log.error("No se pudo crear el WebDriver: %s", e)
         return None
     try:
@@ -1059,8 +1069,8 @@ def _create_driver_with_cookies(
         _log.error("Error inyectando cookies en el driver: %s", e)
         try:
             driver.quit()
-        except Exception:
-            pass
+            except Exception:
+                pass
         return None
 
 
@@ -1563,14 +1573,14 @@ def scrape_profile_and_connections(
             result = _scrape_profile_via_browser(session, profile_url, username, driver=driver)
             if result and result[0]:
                 perfil = result[0]
-        except Exception as exc:
+    except Exception as exc:
             _log.warning("Error scrapeando perfil '%s': %s", username, exc)
 
         if perfil is None:
             _log.warning("No se pudo obtener el perfil '%s'. Continuando con las conexiones.", username)
             print(f"⚠️  No se pudo obtener el perfil '{username}'. Continuando con las conexiones...")
-            perfil = {
-                "profile_id": username,
+        perfil = {
+            "profile_id": username,
                 "name": None, "first_name": None, "last_name": None,
                 "position": None, "company": None, "location": None,
                 "emails": None, "phones": None, "is_connection": None,

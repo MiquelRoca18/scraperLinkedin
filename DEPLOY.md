@@ -1,109 +1,222 @@
-# Despliegue en servidor (nube)
+# Despliegue en Oracle Cloud (gratuito)
 
-Guía para subir el scraper a un servidor y comprobar que todo funciona **antes** de desplegarlo.
-
----
-
-## 1. ¿Qué está listo para el servidor?
-
-| Aspecto | Estado |
-|--------|--------|
-| **Ejecución sin teclado** | ✅ `run_scrape(interactive=False)` + usuario por API o `LINKEDIN_PROFILE_URL` |
-| **Sin abrir navegador en servidor** | ✅ `--no-browser` / `LINKEDIN_NO_BROWSER=1`: si la sesión caduca, termina con error y no intenta abrir navegador |
-| **Límites anti-bloqueo** | ✅ Cooldown 48 h tras 429, intervalo mínimo opcional, throttling, tope de contactos |
-| **Logs en archivo** | ✅ `logs/scraper.log` (útil en servidor sin consola) |
-| **Historial de ejecuciones** | ✅ Tabla `runs` en SQLite; el viewer muestra historial |
-| **Viewer en servidor** | ✅ Flask con trigger de scrape en segundo plano; puede ir detrás de un reverse proxy |
-| **Ejecución programada** | ✅ Script `run_scheduled.py` para cron (una vez al día; opcional `SCHEDULED_RANDOM_DELAY_MINUTES` para no ejecutar siempre a la misma hora) |
+Guía completa para subir el scraper a Oracle Cloud Always Free y dejarlo funcionando 24/7.
 
 ---
 
-## 2. Plan del scraper en el servidor
+## 1. Crear el servidor en Oracle Cloud
 
-- **Viewer** (`python viewer_app.py`): se deja corriendo (systemd, screen, etc.). Sirve la web para ver CSVs, historial de runs y lanzar un scrape a mano.
-- **Scrape automático**: un **cron** (o systemd timer) ejecuta `run_scheduled.py` **una vez al día** (o cada X horas si lo configuras). El script usa `--no-browser` y las mismas limitaciones (cooldown, intervalo mínimo, `MAX_CONTACTS`).
-- **Sesión**: en el servidor **no hay navegador**. La primera vez (y cuando caduque la sesión) tendrás que generar `session.pkl` en tu **máquina local** (donde sí hay navegador), subir el archivo al servidor y reiniciar. Si la sesión caduca, el scraper fallará y en logs/viewer verás el error; entonces repites el proceso (login local → subir `session.pkl`).
+> Si ya tienes la cuenta creada y el servidor levantado, salta al paso 2.
 
-Limitaciones que ya aplican y ayudan a evitar bloqueos:
+### 1.1 Crear cuenta
+1. Ve a [cloud.oracle.com](https://cloud.oracle.com) y crea una cuenta gratuita.
+2. Necesitarás una tarjeta de crédito para verificar (no se cobra nada con el plan Always Free).
 
-- Cooldown de 48 h tras 429 o redirecciones en bucle.
-- Opcional: `MIN_HOURS_BETWEEN_RUNS=24` para no ejecutar más de una vez al día.
-- Throttling entre peticiones y entre conexiones.
-- Tope de contactos con `MAX_CONTACTS` / `MAX_CONTACTS_CAP`.
+### 1.2 Crear la instancia (VM)
+1. En el panel de Oracle, ve a **Compute → Instances → Create Instance**.
+2. Configura:
+   - **Name**: `scraper-linkedin` (o el que quieras)
+   - **Image**: `Ubuntu 22.04` (Canonical Ubuntu)
+   - **Shape**: `VM.Standard.A1.Flex` ← **esto es ARM, el gratuito**
+     - OCPUs: **1** (o hasta 4, son gratis)
+     - RAM: **6 GB** (Chrome necesita al menos 2 GB)
+   - **Networking**: deja la red por defecto, asegúrate de que tiene IP pública
+   - **SSH keys**: sube tu clave pública (`~/.ssh/id_rsa.pub`) o genera una nueva
+3. Pulsa **Create**. En 2-3 minutos estará lista.
+
+### 1.3 Abrir el puerto 5001 en Oracle Cloud
+Oracle tiene dos capas de firewall: la Security List de la VCN y el firewall del SO.
+El script `setup_server.sh` se encarga del firewall del SO, pero el de Oracle hay que abrirlo manualmente:
+
+1. Ve a **Networking → Virtual Cloud Networks → tu VCN → Security Lists → Default Security List**.
+2. Pulsa **Add Ingress Rules** y añade:
+   - **Source CIDR**: `0.0.0.0/0`
+   - **IP Protocol**: TCP
+   - **Destination Port Range**: `5001`
+3. Guarda los cambios.
 
 ---
 
-## 3. Comprobar que el servidor funciona **antes** de subir a la nube
-
-Prueba en tu máquina como si fuera el servidor (sin abrir navegador, mismo flujo que en la nube).
-
-### 3.1 Preparar entorno “servidor” en local
-
-1. **Sesión válida**: tener ya un `session.pkl` generado (ejecutando `python main.py` una vez en local y cerrando cuando termine).
-2. **Usuario sin teclado**: en `.env` pon `LINKEDIN_PROFILE_URL=https://www.linkedin.com/in/TU-USUARIO` (tu perfil).
-3. **Limitar contacto**: por ejemplo `MAX_CONTACTS=5` y `MIN_HOURS_BETWEEN_RUNS=0` para pruebas rápidas.
-
-### 3.2 Prueba 1: Scrape en modo “servidor” (sin navegador)
+## 2. Conectarte al servidor
 
 ```bash
-# Simula lo que hará el cron en la nube
-LINKEDIN_NO_BROWSER=1 python main.py --no-browser --max-contacts 3
+# Desde tu Mac (reemplaza con la IP pública de tu instancia Oracle)
+ssh ubuntu@<IP_PUBLICA_ORACLE>
 ```
 
-- Si la sesión es válida: debe terminar guardando CSVs en `output/` y un registro en `data/contacts.db` (tabla `runs`).
-- Si falla (por ejemplo sesión caducada): debe salir con mensaje claro y **sin** abrir el navegador.
-
-### 3.3 Prueba 2: Dry-run (solo comprobar cooldown/intervalo)
-
+Si generaste la clave con Oracle, primero dale permisos:
 ```bash
-python main.py --dry-run
+chmod 600 ~/Downloads/ssh-key-*.key
+ssh -i ~/Downloads/ssh-key-*.key ubuntu@<IP_PUBLICA_ORACLE>
 ```
-
-Debe imprimir que cooldown e intervalo están OK y terminar sin conectar a LinkedIn.
-
-### 3.4 Prueba 3: Viewer + trigger desde la web
-
-1. Arranca el viewer:
-   ```bash
-   python viewer_app.py
-   ```
-2. Abre `http://localhost:5001` (y el token si tienes `VIEWER_SECRET`).
-3. Pulsa “Lanzar scrape” (o el botón equivalente).
-4. Comprueba en la misma página el estado (en ejecución / último error).
-5. Cuando termine, revisa que en “Historial” o listado de runs aparezca la nueva ejecución y que en “Archivos” / `output/` estén los CSV.
-
-### 3.5 Prueba 4: Ejecución programada (run_scheduled.py)
-
-```bash
-python run_scheduled.py
-```
-
-Debe comportarse igual que `python main.py --no-browser` (mismo límite de contactos, mismo uso de `session.pkl` y `.env`). Comprueba de nuevo `output/` y la tabla `runs`.
-
-Si todas estas pruebas pasan en local, el mismo flujo debería funcionar en la nube.
 
 ---
 
-## 4. Subir a la nube: qué llevar y qué configurar
+## 3. Subir el código al servidor
 
-- **Código**: clonar o copiar el repo (incluyendo `main.py`, `run_scheduled.py`, `viewer_app.py`, `scraper.py`, `db.py`, `log_config.py`, `requirements.txt`, etc.).
-- **Entorno**: `python -m venv venv`, `pip install -r requirements.txt`.
-- **Archivos que no se suben al repo** (subirlos por canal seguro o crearlos en el servidor):
-  - **`.env`**: con al menos `LINKEDIN_PROFILE_URL`, y si quieres `MAX_CONTACTS`, `MIN_HOURS_BETWEEN_RUNS`, `COOLDOWN_HOURS_AFTER_429`, `VIEWER_SECRET`, `DB_PATH`, `LOG_FILE`, etc.
-  - **`session.pkl`**: generado en local (login con navegador), luego subido al servidor en la carpeta del proyecto.
-- **Carpetas**: el servidor creará `output/`, `data/`, `logs/` al ejecutar (o las puedes crear tú).
-- **Viewer**: arrancar con `python viewer_app.py` (o con gunicorn/uWSGI si lo usas). Opcional: poner detrás de nginx con HTTPS y, si quieres, proteger con `VIEWER_SECRET`.
-- **Cron** (ejemplo una vez al día a las 9:00):
-  ```cron
-  0 9 * * * cd /ruta/al/proyecto && ./venv/bin/python run_scheduled.py >> logs/cron.log 2>&1
-  ```
-  Opcional: en `.env` pon `SCHEDULED_RANDOM_DELAY_MINUTES=60` para que, al arrancar, espere 0–60 minutos al azar antes de scrapear (así no cae siempre a la misma hora). Si usas `MIN_HOURS_BETWEEN_RUNS`, el script no hará nada si la última ejecución fue hace menos de X horas.
+Tienes dos opciones:
+
+### Opción A — GitHub (recomendada)
+El script `setup_server.sh` clona el repo automáticamente.
+Solo necesitas que el repo esté en GitHub (puede ser privado).
+
+### Opción B — SCP (si no usas GitHub)
+```bash
+# Desde tu Mac, comprime el proyecto y súbelo
+cd ~/Desktop/practicas
+tar --exclude='.git' --exclude='venv' --exclude='sessions' \
+    --exclude='output' --exclude='logs' \
+    -czf scraper.tar.gz scraperLinkedInPersonal/
+scp scraper.tar.gz ubuntu@<IP_PUBLICA_ORACLE>:~
+
+# En el servidor, descomprime
+ssh ubuntu@<IP_PUBLICA_ORACLE>
+sudo mkdir -p /opt/scraper
+sudo chown ubuntu:ubuntu /opt/scraper
+tar -xzf ~/scraper.tar.gz -C /opt/
+mv /opt/scraperLinkedInPersonal/* /opt/scraper/
+```
 
 ---
 
-## 5. Resumen
+## 4. Ejecutar el script de instalación
 
-- **Sí**: Las implementaciones actuales permiten usarlo en un servidor (sin teclado, sin navegador, con límites y logs).
-- **Plan en servidor**: Viewer siempre corriendo; cron (o similar) ejecutando `run_scheduled.py` con moderación (p. ej. una vez al día); sesión mantenida con `session.pkl` subido desde local cuando haga falta.
-- **Limitaciones**: Cooldown, intervalo mínimo, throttling y tope de contactos ya están aplicados.
-- **Comprobar antes de subir**: Haz en local las 4 pruebas de la sección 3 (scrape con `--no-browser`, dry-run, viewer + trigger, `run_scheduled.py`). Si todo va bien ahí, el servidor en la nube debería comportarse igual.
+### 4.1 Prepara el script (hazlo una vez en tu Mac)
+Edita `setup_server.sh` y cambia estas dos líneas al inicio:
+```bash
+GITHUB_REPO="https://github.com/TU_USUARIO/TU_REPOSITORIO.git"
+ACCOUNT_SLUG="miquel-roca-mascaros"   # tu slug de LinkedIn
+```
+
+### 4.2 Sube y ejecuta el script en el servidor
+```bash
+# Desde tu Mac
+scp setup_server.sh ubuntu@<IP_PUBLICA_ORACLE>:~
+
+# Conéctate al servidor y ejecuta
+ssh ubuntu@<IP_PUBLICA_ORACLE>
+bash setup_server.sh
+```
+
+El script hace automáticamente:
+- Actualiza el sistema
+- Instala Python 3, Chromium y ChromeDriver para ARM
+- Clona el repositorio en `/opt/scraper`
+- Crea el entorno virtual e instala dependencias
+- Crea el archivo `.env` base
+- Configura el servicio systemd para el viewer
+- Configura el crontab para scraping automático
+- Abre el puerto 5001 en UFW e iptables
+
+---
+
+## 5. Configurar el .env en el servidor
+
+Cuando el script termine, edita el `.env` con tus valores reales:
+
+```bash
+nano /opt/scraper/.env
+```
+
+Valores que debes rellenar:
+```env
+# Notificaciones Telegram (ya los tienes)
+TELEGRAM_BOT_TOKEN=8697928169:AAEZzcyxb53k1xcYAdaHlMOy-vZJgNVAy2I
+TELEGRAM_CHAT_ID=2050786051
+
+# Clave de cifrado (la que ya tienes en local)
+CREDENTIAL_KEY=DIhIOv6j2hVCw5QIquIfyhEkLwXZhprcssxGdZE202g=
+
+# Esto ya viene en el .env que genera el script (no tocar):
+CHROME_BINARY=/usr/bin/chromium-browser
+```
+
+---
+
+## 6. Arrancar el viewer
+
+```bash
+sudo systemctl start scraper-viewer
+sudo systemctl status scraper-viewer   # debe verse "active (running)"
+```
+
+Accede desde el navegador:
+```
+http://<IP_PUBLICA_ORACLE>:5001
+```
+
+---
+
+## 7. Añadir tu cuenta LinkedIn
+
+1. Abre el viewer en el navegador.
+2. Ve a la pestaña **Cuentas** → pulsa **Añadir cuenta**.
+3. Introduce tu email y contraseña de LinkedIn.
+4   El servidor abrirá Chromium en modo headless y hará el login automáticamente.
+5. Si LinkedIn pide verificación, recibirás un aviso en Telegram.
+6. Cuando la sesión esté activa, el card de la cuenta aparecerá en verde.
+
+---
+
+## 8. Configurar keepalive (para que no duerma)
+
+> Oracle Always Free **no duerme** (es una VM real), así que este paso es opcional.
+> Solo es necesario si en el futuro cambias a Render/Railway u otro servicio que sí duerme.
+
+Si quieres igualmente monitorizar que el viewer está vivo:
+
+1. Ve a [cron-job.org](https://console.cron-job.org/jobs) y crea una cuenta gratuita.
+2. Crea un nuevo cron job:
+   - **URL**: `http://<IP_PUBLICA_ORACLE>:5001/ping`
+   - **Interval**: cada 5 minutos
+3. Guarda. Recibirás alertas si el viewer cae.
+
+---
+
+## 9. Verificar que todo funciona
+
+```bash
+# Ver logs del viewer en tiempo real
+sudo journalctl -u scraper-viewer -f
+
+# Ver logs del cron
+tail -f /opt/scraper/logs/cron.log
+
+# Comprobar que el viewer responde
+curl http://localhost:5001/ping
+
+# Ver estado del servicio
+sudo systemctl status scraper-viewer
+
+# Comprobar que ChromeDriver funciona en ARM
+chromedriver --version
+chromium-browser --version
+```
+
+---
+
+## 10. Resumen de qué hace el servidor automáticamente
+
+| Cuándo | Qué hace | Modo |
+|--------|----------|------|
+| Domingos 9h | Recopila slugs de tus conexiones | `--mode index` |
+| L-V 8h, 13h, 18h | Enriquece hasta 20 contactos | `--mode enrich` |
+| Sábados 9h, 16h | Enriquece hasta 20 contactos | `--mode enrich` |
+| Si sesión caduca | Intenta re-login automático en headless | auto |
+| Si re-login falla | Envía aviso a Telegram | auto |
+| Al terminar enrich | Envía resumen a Telegram | auto |
+
+**~350-560 contactos enriquecidos por semana** dentro de límites seguros anti-ban.
+
+---
+
+## 11. Actualizar el código en el servidor
+
+Cuando hagas cambios en local y los subas a GitHub:
+
+```bash
+ssh ubuntu@<IP_PUBLICA_ORACLE>
+cd /opt/scraper
+git pull
+sudo systemctl restart scraper-viewer
+```
