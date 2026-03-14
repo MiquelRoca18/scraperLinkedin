@@ -5,3 +5,4 @@ beautifulsoup4
 openpyxl
 flask
 pytest
+cryptography>=41.0.0

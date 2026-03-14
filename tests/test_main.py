@@ -218,19 +218,48 @@ def test_check_daily_budget_superado():
 # ── get_username_non_interactive ──────────────────────────────────────────────
 
 def test_get_username_non_interactive_desde_api():
+    """Detección automática desde la sesión activa — caso principal."""
     fake = MagicMock()
     with patch("main.get_current_username", return_value="juan-perez"):
         assert main_module.get_username_non_interactive(fake) == "juan-perez"
 
 
 def test_get_username_non_interactive_desde_env():
+    """Fallback a LINKEDIN_PROFILE_URL cuando la sesión no devuelve username."""
     fake = MagicMock()
     with patch("main.get_current_username", return_value=None):
         with patch.dict(os.environ, {"LINKEDIN_PROFILE_URL": "https://linkedin.com/in/maria-lopez"}):
             assert main_module.get_username_non_interactive(fake) == "maria-lopez"
 
 
+def test_get_username_non_interactive_fallback_account_slug():
+    """
+    Fallback a account_slug cuando la auto-detección y LINKEDIN_PROFILE_URL fallan.
+    Este es el caso real en servidor: --account=miquel-roca siempre resuelve.
+    """
+    fake = MagicMock()
+    with patch("main.get_current_username", return_value=None):
+        env = {k: v for k, v in os.environ.items() if k != "LINKEDIN_PROFILE_URL"}
+        with patch.dict(os.environ, env, clear=True):
+            result = main_module.get_username_non_interactive(fake, account_slug="miquel-roca")
+            assert result == "miquel-roca"
+
+
+def test_get_username_non_interactive_account_slug_no_usado_si_hay_sesion():
+    """
+    El account_slug NO se usa si la sesión ya detectó el username (prioridad 1 > 2).
+    """
+    fake = MagicMock()
+    with patch("main.get_current_username", return_value="username-real"):
+        result = main_module.get_username_non_interactive(fake, account_slug="slug-diferente")
+        assert result == "username-real"
+
+
 def test_get_username_non_interactive_sin_usuario_ni_env_lanza():
+    """
+    Sin sesión, sin account_slug y sin LINKEDIN_PROFILE_URL → ValueError.
+    Solo ocurre en configuraciones muy incompletas.
+    """
     fake = MagicMock()
     with patch("main.get_current_username", return_value=None):
         env = {k: v for k, v in os.environ.items() if k != "LINKEDIN_PROFILE_URL"}

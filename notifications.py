@@ -60,16 +60,66 @@ def _send(text: str) -> bool:
 
 # ── Eventos específicos ────────────────────────────────────────────────────────
 
-def notify_session_expired(account: Optional[str] = None) -> None:
+def notify_session_expired(account: Optional[str] = None, auto_retry: bool = False) -> None:
     """
-    Notifica que la sesión de una cuenta ha caducado y necesita re-login manual.
+    Notifica que la sesión de una cuenta ha caducado.
+    Si auto_retry=True indica que el sistema intentará re-login automáticamente.
     """
     label = f"<b>{account}</b>" if account else "la cuenta principal"
+    if auto_retry:
+        _send(
+            f"⚠️ <b>LinkedIn Scraper — Sesión caducada</b>\n\n"
+            f"La sesión de {label} ha expirado.\n"
+            f"🔄 Intentando re-login automático con las credenciales guardadas…"
+        )
+    else:
+        _send(
+            f"⚠️ <b>LinkedIn Scraper — Sesión caducada</b>\n\n"
+            f"La sesión de {label} ha expirado.\n"
+            f"No hay credenciales guardadas para hacer login automático.\n"
+            f"Inicia sesión manualmente desde la vista del scraper."
+        )
+
+
+def notify_auto_login_ok(account: Optional[str] = None) -> None:
+    """Re-login automático completado con éxito — no hace falta intervención manual."""
+    label = f"<b>{account}</b>" if account else "la cuenta principal"
     _send(
-        f"⚠️ <b>LinkedIn Scraper — Sesión caducada</b>\n\n"
-        f"La sesión de {label} ha expirado.\n"
-        f"Es necesario volver a iniciar sesión manualmente:\n"
-        f"<code>python main.py --account={account or 'nombre-cuenta'}</code>"
+        f"✅ <b>LinkedIn Scraper — Re-login automático OK</b>\n\n"
+        f"La sesión de {label} se ha renovado automáticamente.\n"
+        f"El scraper continuará en el próximo ciclo programado."
+    )
+
+
+def notify_auto_login_needs_verification(
+    account: Optional[str] = None,
+    detail: Optional[str] = None,
+) -> None:
+    """
+    Re-login automático interrumpido por 2FA / captcha / verificación de email.
+    El usuario debe completarlo manualmente.
+    """
+    label = f"<b>{account}</b>" if account else "la cuenta principal"
+    extra = f"\n\n<i>{detail}</i>" if detail else ""
+    _send(
+        f"🔐 <b>LinkedIn Scraper — Verificación requerida</b>\n\n"
+        f"El re-login automático de {label} se detuvo porque LinkedIn\n"
+        f"pide verificación adicional (código por email, teléfono o captcha).{extra}\n\n"
+        f"Inicia sesión manualmente desde la vista del scraper."
+    )
+
+
+def notify_auto_login_failed(
+    account: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> None:
+    """Re-login automático fallido (credenciales incorrectas u otro error)."""
+    label = f"<b>{account}</b>" if account else "la cuenta principal"
+    extra = f"\n\nMotivo: <i>{reason}</i>" if reason else ""
+    _send(
+        f"❌ <b>LinkedIn Scraper — Re-login automático fallido</b>\n\n"
+        f"No se pudo renovar la sesión de {label} automáticamente.{extra}\n\n"
+        f"Inicia sesión manualmente desde la vista del scraper."
     )
 
 

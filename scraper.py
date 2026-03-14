@@ -525,17 +525,20 @@ def login_with_credentials(
     email: str,
     password: str,
     proxy: Optional[str] = None,
+    headless: bool = False,
 ) -> dict:
     """
     Realiza el login automatizado en LinkedIn con email y contraseña.
 
-    Abre Chrome en modo visible (headless=False) para evitar detecciones anti-bot
-    en la página de login. Rellena los campos de forma humanizada (tecla a tecla
-    con delays aleatorios) y comprueba el resultado.
+    headless=False (por defecto) → Chrome visible. Recomendado para el primer
+      login desde la vista, donde el usuario puede completar 2FA o captcha.
+    headless=True → Chrome oculto. Usado en re-login automático desde el cron.
+      Si LinkedIn pide verificación, se retorna "needs_verification" y se notifica
+      por Telegram para que el usuario lo haga manualmente.
 
     Retorna un dict con una de estas claves "status":
       "ok"                 → sesión guardada en sessions/{account}.pkl
-      "needs_verification" → LinkedIn pide 2FA / email-code / captcha (no se puede automatizar)
+      "needs_verification" → LinkedIn pide 2FA / email-code / captcha
       "wrong_credentials"  → email o contraseña incorrectos
       "error"              → error inesperado (mensaje en "message")
     """
@@ -544,7 +547,7 @@ def login_with_credentials(
     session_path = session_file_for(account)
     driver = None
     try:
-        driver = webdriver.Chrome(options=_make_chrome_options(headless=False, proxy=proxy))
+        driver = webdriver.Chrome(options=_make_chrome_options(headless=headless, proxy=proxy))
         _apply_stealth(driver)
         driver.get("https://www.linkedin.com/login")
         time.sleep(random.uniform(2.0, 3.5))

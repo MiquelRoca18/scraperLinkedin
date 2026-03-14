@@ -426,6 +426,20 @@ def export_contacts():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Keepalive ──────────────────────────────────────────────────────────────────
+
+@app.route("/ping")
+def ping():
+    """
+    Endpoint público de keepalive — no requiere autenticación.
+    Úsalo desde cron-job.org u otro servicio externo para evitar
+    que el servidor se duerma en plataformas con free-tier.
+    Devuelve 200 OK con un JSON mínimo.
+    """
+    from datetime import datetime, timezone
+    return jsonify({"ok": True, "ts": datetime.now(timezone.utc).isoformat()})
+
+
 # ── Runs ───────────────────────────────────────────────────────────────────────
 
 @app.route("/api/runs")
@@ -637,6 +651,15 @@ def add_account():
                     # Guardar también bajo el nombre real para que el frontend lo pueda consultar
                     with _login_lock:
                         _login_status[detected] = result
+
+            # Login OK: guardar contraseña cifrada para re-login automático futuro
+            if result.get("status") == "ok":
+                final_user = result.get("final_username") or work_username
+                try:
+                    from db import save_account_credentials
+                    save_account_credentials(final_user, password)
+                except Exception:
+                    pass  # Si CREDENTIAL_KEY no está configurada, se ignora silenciosamente
 
         except Exception as exc:
             result = {"status": "error", "message": str(exc)}

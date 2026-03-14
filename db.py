@@ -90,8 +90,9 @@ CREATE TABLE IF NOT EXISTS accounts (
 """
 
 # Migraciones suaves (se aplican en ensure_tables y fallan silenciosamente si ya existen)
-_ACCOUNTS_MIGRATION_PROXY = "ALTER TABLE accounts ADD COLUMN proxy TEXT;"
-_ACCOUNTS_MIGRATION_EMAIL = "ALTER TABLE accounts ADD COLUMN email TEXT;"
+_ACCOUNTS_MIGRATION_PROXY     = "ALTER TABLE accounts ADD COLUMN proxy TEXT;"
+_ACCOUNTS_MIGRATION_EMAIL     = "ALTER TABLE accounts ADD COLUMN email TEXT;"
+_ACCOUNTS_MIGRATION_ENCPWD    = "ALTER TABLE accounts ADD COLUMN encrypted_password TEXT;"
 
 
 # ── Helpers internos ───────────────────────────────────────────────────────────
@@ -119,7 +120,11 @@ def ensure_tables() -> None:
     conn.executescript(CONTACTS_SCHEMA)
     conn.executescript(ACCOUNTS_SCHEMA)
     # Migraciones suaves: se ignoran si la columna ya existe
-    for migration in (_ACCOUNTS_MIGRATION_PROXY, _ACCOUNTS_MIGRATION_EMAIL):
+    for migration in (
+        _ACCOUNTS_MIGRATION_PROXY,
+        _ACCOUNTS_MIGRATION_EMAIL,
+        _ACCOUNTS_MIGRATION_ENCPWD,
+    ):
         try:
             conn.execute(migration)
             conn.commit()
@@ -646,3 +651,83 @@ def deactivate_account(username: str) -> bool:
     conn.commit()
     conn.close()
     return cur.rowcount > 0
+
+
+# ── Credenciales cifradas ──────────────────────────────────────────────────────
+
+def _get_cipher():
+    """
+    Devuelve un objeto Fernet inicializado con CREDENTIAL_KEY del entorno.
+    Si la variable no está configurada, lanza ValueError.
+    La clave debe ser una clave Fernet válida de 32 bytes en base64-urlsafe.
+    Para generar una nueva: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    """
+    from cryptography.fernet import Fernet
+    key = os.environ.get("CREDENTIAL_KEY", "").strip()
+    if not key:
+        raise ValueError(
+            "CREDENTIAL_KEY no está configurada en .env. "
+            "Genera una con: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+    return Fernet(key.encode())
+
+
+def save_account_credentials(username: str, password: str) -> bool:
+    """
+    Cifra y guarda la contraseña de una cuenta.
+    El email ya está en la columna 'email' de accounts — solo necesitamos la contraseña.
+    Requiere CREDENTIAL_KEY en .env.
+    Devuelve True si se guardó, False si la cuenta no existe o no hay clave configurada.
+    """
+    try:
+        cipher = _get_cipher()
+        encrypted = cipher.encrypt(password.encode()).decode()
+        ensure_tables()
+        conn = _connect()
+        cur = conn.execute(
+            "UPDATE accounts SET encrypted_password = ? WHERE username = ?",
+            (encrypted, username),
+        )
+        conn.commit()
+        conn.close()
+        return cur.rowcount > 0
+    except (ValueError, Exception):
+        return False
+
+
+def get_account_credentials(username: str) -> Optional[Dict]:
+    """
+    Recupera y descifra las credenciales guardadas para una cuenta.
+    Devuelve {"email": "...", "password": "..."} o None si no hay credenciales
+    guardadas o no se pueden descifrar.
+    """
+    try:
+        ensure_tables()
+        conn = _connect()
+        row = conn.execute(
+            "SELECT email, encrypted_password FROM accounts WHERE username = ?",
+            (username,),
+        ).fetchone()
+        conn.close()
+        if not row or not row["encrypted_password"] or not row["email"]:
+            return None
+        cipher = _get_cipher()
+        password = cipher.decrypt(row["encrypted_password"].encode()).decode()
+        return {"email": row["email"], "password": password}
+    except Exception:
+        return None
+
+
+def has_saved_credentials(username: str) -> bool:
+    """True si la cuenta tiene contraseña cifrada guardada Y tiene email configurado."""
+    try:
+        ensure_tables()
+        conn = _connect()
+        row = conn.execute(
+            "SELECT email, encrypted_password FROM accounts WHERE username = ?",
+            (username,),
+        ).fetchone()
+        conn.close()
+        return bool(row and row["email"] and row["encrypted_password"])
+    except Exception:
+        return False

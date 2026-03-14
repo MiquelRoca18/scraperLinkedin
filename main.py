@@ -54,6 +54,9 @@ from notifications import (
     notify_block,
     notify_daily_summary,
     notify_index_complete,
+    notify_auto_login_ok,
+    notify_auto_login_needs_verification,
+    notify_auto_login_failed,
 )
 from log_config import setup_logging
 
@@ -76,6 +79,74 @@ CONTACT_REFRESH_DAYS      = max(1, int(os.getenv("CONTACT_REFRESH_DAYS", "30")))
 
 COOLDOWN_FILE  = ".linkedin_429_cooldown"
 LAST_RUN_FILE  = ".linkedin_last_run"
+
+
+# ── Re-login automático ────────────────────────────────────────────────────────
+
+def _try_auto_relogin(account: Optional[str]) -> bool:
+    """
+    Intenta renovar la sesión automáticamente usando las credenciales cifradas
+    guardadas en la BD.
+
+    Flujo:
+      1. Comprueba si hay credenciales guardadas para esta cuenta.
+      2. Notifica por Telegram que la sesión caducó y que se intentará re-login.
+      3. Llama a login_with_credentials (abre Chrome, rellena email/contraseña).
+      4. Notifica el resultado: OK / verificación requerida / error.
+
+    Devuelve True si el re-login fue exitoso, False en cualquier otro caso.
+    No lanza excepciones: todos los errores se loggean y notifican.
+    """
+    from db import has_saved_credentials, get_account_credentials, get_account_proxy as _get_proxy_db
+    from scraper import login_with_credentials
+
+    label = account or "cuenta principal"
+
+    # Sin credenciales guardadas → aviso manual
+    if not has_saved_credentials(account):
+        logger.warning("_try_auto_relogin [%s]: sin credenciales guardadas", label)
+        notify_session_expired(account, auto_retry=False)
+        return False
+
+    # Hay credenciales → avisar que se intentará automáticamente
+    notify_session_expired(account, auto_retry=True)
+    logger.info("_try_auto_relogin [%s]: iniciando login automático", label)
+
+    try:
+        creds  = get_account_credentials(account)
+        if not creds:
+            logger.error("_try_auto_relogin [%s]: no se pudieron descifrar credenciales", label)
+            notify_auto_login_failed(account, "No se pudieron descifrar las credenciales.")
+            return False
+
+        proxy  = _get_proxy_db(account) if account else None
+        # headless=True: el re-login automático corre sin ventana visible.
+        # Si LinkedIn pide verificación, se notifica por Telegram y el usuario
+        # lo completa manualmente desde la vista.
+        result = login_with_credentials(
+            account or "", creds["email"], creds["password"],
+            proxy=proxy, headless=True,
+        )
+
+        if result["status"] == "ok":
+            logger.info("_try_auto_relogin [%s]: OK", label)
+            notify_auto_login_ok(account)
+            return True
+
+        if result["status"] == "needs_verification":
+            logger.warning("_try_auto_relogin [%s]: requiere verificación", label)
+            notify_auto_login_needs_verification(account, result.get("message"))
+            return False
+
+        # wrong_credentials u otro error
+        logger.error("_try_auto_relogin [%s]: %s — %s", label, result["status"], result.get("message"))
+        notify_auto_login_failed(account, result.get("message"))
+        return False
+
+    except Exception as exc:
+        logger.exception("_try_auto_relogin [%s]: excepción inesperada: %s", label, exc)
+        notify_auto_login_failed(account, str(exc))
+        return False
 
 
 # ── Controles de seguridad ─────────────────────────────────────────────────────
@@ -174,16 +245,32 @@ def get_username(account) -> str:
     return extract_username(url)
 
 
-def get_username_non_interactive(account) -> str:
-    username = get_current_username(account)
+def get_username_non_interactive(session, account_slug: Optional[str] = None) -> str:
+    """
+    Resuelve el username de LinkedIn en modo no interactivo (cron / servidor).
+
+    Orden de prioridad:
+      1. Detección automática desde la sesión activa (más fiable).
+      2. account_slug — el slug con el que se registró la cuenta; siempre
+         disponible cuando se lanza un run con --account=<slug>.
+      3. LINKEDIN_PROFILE_URL en .env (fallback legacy).
+      4. ValueError — solo si ninguna fuente lo puede resolver.
+    """
+    username = get_current_username(session)
     if username:
         return username
+    if account_slug:
+        logger.debug(
+            "get_username_non_interactive: auto-detección fallida, "
+            "usando account_slug '%s' como fallback", account_slug,
+        )
+        return account_slug
     url = os.getenv("LINKEDIN_PROFILE_URL", "").strip()
     if url:
         return extract_username(url)
     raise ValueError(
-        "En modo no interactivo hace falta LINKEDIN_PROFILE_URL en .env "
-        "o que la sesión devuelva el usuario."
+        "No se pudo determinar el username de LinkedIn. "
+        "Asegúrate de registrar la cuenta con su slug correcto desde la vista."
     )
 
 
@@ -243,10 +330,19 @@ def run_index(interactive: bool = True, account: Optional[str] = None) -> None:
     try:
         session = init_client(account=account, proxy=proxy)
     except RuntimeError:
-        notify_session_expired(account)
-        raise
+        # Sesión caducada en modo no interactivo → intentar re-login automático
+        relogin_ok = _try_auto_relogin(account)
+        if relogin_ok:
+            # La sesión se renovó: reintentar init_client con las cookies nuevas
+            try:
+                session = init_client(account=account, proxy=proxy)
+            except RuntimeError:
+                logger.error("run_index [%s]: fallo tras re-login automático", account)
+                raise
+        else:
+            raise
 
-    username = get_username(session) if interactive else get_username_non_interactive(session)
+    username = get_username(session) if interactive else get_username_non_interactive(session, account_slug=account)
     logger.info("run_index: usuario=%s, proxy=%s", username, bool(proxy))
 
     slugs = collect_all_slugs(session, proxy=proxy)
@@ -293,10 +389,18 @@ def run_enrich(
     try:
         session = init_client(account=account, proxy=proxy)
     except RuntimeError:
-        notify_session_expired(account)
-        raise
+        # Sesión caducada en modo no interactivo → intentar re-login automático
+        relogin_ok = _try_auto_relogin(account)
+        if relogin_ok:
+            try:
+                session = init_client(account=account, proxy=proxy)
+            except RuntimeError:
+                logger.error("run_enrich [%s]: fallo tras re-login automático", account)
+                raise
+        else:
+            raise
 
-    username = get_username(session) if interactive else get_username_non_interactive(session)
+    username = get_username(session) if interactive else get_username_non_interactive(session, account_slug=account)
     logger.info("run_enrich: usuario=%s, proxy=%s, refresh_days=%d", username, bool(proxy), CONTACT_REFRESH_DAYS)
 
     _run_safety_checks(username=username, interactive=interactive)
