@@ -110,26 +110,15 @@ El script hace automáticamente:
 
 ---
 
-## 5. Configurar el .env en el servidor
+## 5. Configurar el .env
 
-Cuando el script termine, edita el `.env` con tus valores reales:
+El script te pregunta los valores sensibles de forma interactiva durante la instalación:
 
-```bash
-nano /opt/scraper/.env
-```
+> **Importante sobre la `CREDENTIAL_KEY`**: usa la misma que tienes en tu `.env` local.
+> Si generas una nueva, las contraseñas que guardaste en local no podrán descifrarse en el servidor.
+> Para verla en tu Mac: `grep CREDENTIAL_KEY /Users/miquelroca/Desktop/practicas/scraperLinkedInPersonal/.env`
 
-Valores que debes rellenar:
-```env
-# Notificaciones Telegram (ya los tienes)
-TELEGRAM_BOT_TOKEN=8697928169:AAEZzcyxb53k1xcYAdaHlMOy-vZJgNVAy2I
-TELEGRAM_CHAT_ID=2050786051
-
-# Clave de cifrado (la que ya tienes en local)
-CREDENTIAL_KEY=DIhIOv6j2hVCw5QIquIfyhEkLwXZhprcssxGdZE202g=
-
-# Esto ya viene en el .env que genera el script (no tocar):
-CHROME_BINARY=/usr/bin/chromium-browser
-```
+El resto de valores (límites anti-ban, horarios, `CHROME_BINARY`, etc.) ya vienen configurados con los valores correctos para Oracle Cloud ARM.
 
 ---
 

@@ -102,10 +102,56 @@ info "Creando directorios necesarios..."
 mkdir -p sessions output logs data
 log "Directorios creados"
 
-# ── 7. Crear .env con valores base ────────────────────────────────────────────
-if [ ! -f "$APP_DIR/.env" ]; then
-    info "Creando archivo .env con valores base..."
-    cat > "$APP_DIR/.env" << 'ENVEOF'
+# ── 7. Crear .env con valores reales (preguntar al usuario) ───────────────────
+if [ -f "$APP_DIR/.env" ]; then
+    warn ".env ya existe. ¿Sobreescribir con nuevos valores? [s/N]"
+    read -r OVERWRITE_ENV
+    if [[ ! "$OVERWRITE_ENV" =~ ^[sS]$ ]]; then
+        info "Manteniendo .env existente."
+        # Asegurar que CHROME_BINARY esté correcto aunque no se sobreescriba
+        if ! grep -q "^CHROME_BINARY=" "$APP_DIR/.env"; then
+            echo "CHROME_BINARY=/usr/bin/chromium-browser" >> "$APP_DIR/.env"
+        fi
+    else
+        WRITE_ENV=true
+    fi
+else
+    WRITE_ENV=true
+fi
+
+if [ "${WRITE_ENV:-false}" = "true" ]; then
+    echo ""
+    echo -e "${BLUE}──────────────────────────────────────────────────────────${NC}"
+    echo -e "${BLUE}  Configuración del .env — responde a las preguntas        ${NC}"
+    echo -e "${BLUE}  (pulsa Enter para aceptar el valor por defecto)           ${NC}"
+    echo -e "${BLUE}──────────────────────────────────────────────────────────${NC}"
+    echo ""
+
+    # ── Telegram ──────────────────────────────────────────────────────────────
+    echo -e "${YELLOW}Telegram Bot Token${NC} (de @BotFather):"
+    read -r INPUT_TG_TOKEN
+    TG_TOKEN="${INPUT_TG_TOKEN:-}"
+
+    echo -e "${YELLOW}Telegram Chat ID${NC} (tu ID personal, de @userinfobot):"
+    read -r INPUT_TG_CHAT
+    TG_CHAT="${INPUT_TG_CHAT:-}"
+
+    # ── CREDENTIAL_KEY ────────────────────────────────────────────────────────
+    echo ""
+    echo -e "${YELLOW}CREDENTIAL_KEY${NC} (clave Fernet para cifrar contraseñas)."
+    echo "  → Si ya tienes una (la del .env de tu Mac), pégala aquí."
+    echo "  → Si dejas esto vacío, se genera una nueva automáticamente."
+    read -r INPUT_CRED_KEY
+    if [ -z "$INPUT_CRED_KEY" ]; then
+        info "Generando CREDENTIAL_KEY automáticamente..."
+        INPUT_CRED_KEY=$(source "$APP_DIR/venv/bin/activate" && python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+        log "CREDENTIAL_KEY generada: $INPUT_CRED_KEY"
+        warn "Apunta esta clave en un lugar seguro. Si la pierdes, las contraseñas cifradas no se podrán recuperar."
+    fi
+    CRED_KEY="$INPUT_CRED_KEY"
+
+    # ── Escribir .env ──────────────────────────────────────────────────────────
+    cat > "$APP_DIR/.env" << ENVEOF
 ## Configuración del scraper de LinkedIn
 ## ──────────────────────────────────────────────────────────────────────────────
 
@@ -129,20 +175,14 @@ HEADLESS=true
 CHROME_BINARY=/usr/bin/chromium-browser
 
 # ── Notificaciones Telegram ───────────────────────────────────────────────────
-# TELEGRAM_BOT_TOKEN → habla con @BotFather en Telegram → /newbot
-# TELEGRAM_CHAT_ID   → tu ID personal (@userinfobot en Telegram)
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
+TELEGRAM_BOT_TOKEN=${TG_TOKEN}
+TELEGRAM_CHAT_ID=${TG_CHAT}
 
 # ── Cifrado de credenciales ───────────────────────────────────────────────────
-# Genera la clave con:
-#   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-CREDENTIAL_KEY=
+CREDENTIAL_KEY=${CRED_KEY}
 ENVEOF
-    warn "IMPORTANTE: Edita $APP_DIR/.env con tus valores reales antes de continuar."
-    warn "  → nano $APP_DIR/.env"
-else
-    warn ".env ya existe, no se sobreescribe. Asegúrate de que CHROME_BINARY=/usr/bin/chromium-browser"
+
+    log ".env creado con todos los valores configurados"
 fi
 
 # ── 8. Servicio systemd para el viewer ────────────────────────────────────────
@@ -244,25 +284,17 @@ fi
 echo ""
 echo -e "${YELLOW}PASOS SIGUIENTES:${NC}"
 echo ""
-echo "  1. Edita el .env con tus credenciales reales:"
-echo "       nano $APP_DIR/.env"
-echo ""
-echo "  2. Genera la CREDENTIAL_KEY (si no la tienes):"
-echo "       cd $APP_DIR && source venv/bin/activate"
-echo "       python3 -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
-echo "       # Copia el resultado y pégalo en .env como CREDENTIAL_KEY=..."
-echo ""
-echo "  3. Arranca el viewer:"
+echo "  1. Arranca el viewer:"
 echo "       sudo systemctl start scraper-viewer"
 echo "       sudo systemctl status scraper-viewer"
 echo ""
-echo "  4. Accede al viewer desde el navegador:"
+echo "  2. Accede al viewer desde el navegador:"
 echo "       http://$(curl -s ifconfig.me 2>/dev/null || echo '<IP_SERVIDOR>'):$APP_PORT"
 echo ""
-echo "  5. Añade tu cuenta LinkedIn desde el viewer (correo + contraseña)."
+echo "  3. Añade tu cuenta LinkedIn desde el viewer (correo + contraseña)."
 echo "     Esto creará la sesión .pkl automáticamente."
 echo ""
-echo "  6. Configura el cron externo en https://cron-job.org para el keepalive:"
+echo "  4. Configura el cron externo en https://cron-job.org para el keepalive:"
 echo "       URL: http://$(curl -s ifconfig.me 2>/dev/null || echo '<IP_SERVIDOR>'):$APP_PORT/ping"
 echo "       Intervalo: cada 5 minutos"
 echo ""
