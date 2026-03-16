@@ -631,7 +631,7 @@ def add_account():
     def _do_login():
         try:
             from scraper import login_with_credentials
-            result = login_with_credentials(work_username, email, password, proxy=proxy or None)
+            result = login_with_credentials(work_username, email, password, proxy=proxy or None, headless=True)
 
             # Si el login fue ok y no tenemos slug definitivo, renombramos
             if result.get("status") == "ok" and auto_detect:
