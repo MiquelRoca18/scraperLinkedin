@@ -430,10 +430,18 @@ def run_enrich(
     started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     new_count = updated_count = skipped_count = error_count = visited = 0
     run_limit = max_contacts_override or MAX_CONTACTS_PER_RUN
+    # En servidores con ≤1 GB RAM, Chrome acumula memoria entre perfiles y crashea.
+    # Reiniciamos proactivamente cada N perfiles para liberar RAM antes del OOM.
+    DRIVER_RESTART_EVERY = 3
 
-    driver = _create_driver_with_cookies(session, proxy=proxy)
+    def _make_fresh_driver():
+        drv = _create_driver_with_cookies(session, proxy=proxy)
+        if not drv:
+            logger.error("run_enrich: no se pudo crear el WebDriver")
+        return drv
+
+    driver = _make_fresh_driver()
     if not driver:
-        logger.error("run_enrich: no se pudo crear el WebDriver")
         print("❌ No se pudo abrir el navegador. Revisa la sesión.")
         return
 
@@ -455,6 +463,19 @@ def run_enrich(
                     logger.debug("skip %s (hace %.1f días)", slug, days)
                     continue  # no cuenta contra el presupuesto ni visita el perfil
 
+            # ── Reinicio proactivo de Chrome cada N perfiles ──────────────────
+            if visited > 0 and visited % DRIVER_RESTART_EVERY == 0:
+                logger.info("run_enrich: reiniciando Chrome tras %d perfiles para liberar RAM...", visited)
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                time.sleep(4)  # dejar al SO recuperar memoria antes de abrir Chrome
+                driver = _make_fresh_driver()
+                if not driver:
+                    logger.error("run_enrich: no se pudo recrear el WebDriver, abortando")
+                    break
+
             # ── Visita real del perfil ────────────────────────────────────────
             print(f"   [{visited + 1}/{run_limit}] {slug}", end="\r", flush=True)
             try:
@@ -471,7 +492,7 @@ def run_enrich(
                 mark_queue_error(username, slug, str(exc))
                 error_count += 1
                 visited += 1  # también cuenta: se hizo una petición
-                # Si el renderer de Chrome crasheó, recrear el driver para los siguientes perfiles
+                # Si el renderer de Chrome crasheó, recrear el driver inmediatamente
                 exc_str = str(exc).lower()
                 if any(kw in exc_str for kw in ("renderer", "session info", "no such session", "invalid session")):
                     logger.warning("run_enrich: renderer crash — recreando WebDriver...")
@@ -479,7 +500,8 @@ def run_enrich(
                         driver.quit()
                     except Exception:
                         pass
-                    driver = _create_driver_with_cookies(session, proxy=proxy)
+                    time.sleep(4)
+                    driver = _make_fresh_driver()
                     if not driver:
                         logger.error("run_enrich: no se pudo recrear el WebDriver, abortando")
                         break

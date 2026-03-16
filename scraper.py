@@ -850,7 +850,23 @@ def _extract_person_from_dom(driver) -> Optional[Dict]:
                 if len(txt) < 200 and not txt.startswith("http"):
                     out["location"] = txt
                     break
-        if out["position"] and " at " in out["position"]:
+        # Intentar extraer empresa del top-card (LinkedIn nuevo diseño)
+        if not out.get("company"):
+            for sel in (
+                # Selector para el nombre de empresa en la sección de experiencia del top-card
+                "div.inline-show-more-text--is-collapsed span[aria-hidden='true']",
+                "div[data-field='experience_position_title'] ~ div span[aria-hidden='true']",
+                "a[data-field='experience_company_logo'] span[aria-hidden='true']",
+                ".pv-text-details__right-panel .t-14.t-normal span[aria-hidden='true']",
+            ):
+                els = driver.find_elements(By.CSS_SELECTOR, sel)
+                if els:
+                    txt = els[0].text.strip()
+                    if txt and len(txt) < 100 and not txt.startswith("http"):
+                        out["company"] = txt
+                        break
+        # Fallback: extraer empresa del headline si tiene formato "Cargo en Empresa"
+        if not out.get("company") and out["position"] and " at " in out["position"]:
             out["company"] = out["position"].split(" at ")[-1].strip()
         if out.get("name") or out.get("position") or out.get("location") or out.get("company"):
             return out
@@ -1345,7 +1361,7 @@ def _collect_connection_slugs(driver, max_contacts: int) -> List[str]:
     """
     Navega por la página de conexiones y la página de búsqueda de primer grado
     para recopilar slugs únicos hasta alcanzar max_contacts.
-    No extrae datos de cada perfil aquí — eso lo hace _enrich_connection_from_profile.
+    No extrae datos de cada perfil aqui - eso lo hace _enrich_connection_from_profile.
     """
     seen: set = set()
     slugs: List[str] = []
