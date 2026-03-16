@@ -1090,20 +1090,24 @@ def _create_driver_with_cookies(
     proxy: 'host:port' o 'user:pass@host:port' para enrutar el tráfico por un proxy.
     Aplica el script stealth antes de la primera navegación.
     Devuelve el driver listo para navegar, o None si no se puede crear.
+    Usa 'eager' page load strategy y timeout de 45s para servidores con poca RAM.
     """
     use_headless = HEADLESS if headless is None else headless
     try:
-        driver = webdriver.Chrome(options=_make_chrome_options(headless=use_headless, proxy=proxy))
+        opts = _make_chrome_options(headless=use_headless, proxy=proxy)
+        opts.page_load_strategy = "eager"
+        driver = webdriver.Chrome(options=opts)
+        driver.set_page_load_timeout(45)
     except Exception as e:
         _log.error("No se pudo crear el WebDriver: %s", e)
         return None
     try:
         _apply_stealth(driver)
         driver.get("https://www.linkedin.com")
-        time.sleep(random.uniform(1.5, 3.0))
+        time.sleep(random.uniform(1.0, 1.5))
         _inject_cookies(driver, session.cookies)
-        driver.refresh()
-        time.sleep(random.uniform(1.5, 2.5))
+        driver.get("https://www.linkedin.com/feed/")
+        time.sleep(random.uniform(1.0, 1.5))
         return driver
     except Exception as e:
         _log.error("Error inyectando cookies en el driver: %s", e)
