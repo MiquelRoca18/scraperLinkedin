@@ -479,7 +479,7 @@ def run_enrich(
             # ── Visita real del perfil ────────────────────────────────────────
             print(f"   [{visited + 1}/{run_limit}] {slug}", end="\r", flush=True)
             try:
-                data = _enrich_connection_from_profile(driver, slug)
+                data = _enrich_connection_from_profile(driver, slug, session=session)
                 result = upsert_contact(username, data)
                 mark_queue_done(username, slug)
                 visited += 1

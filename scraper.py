@@ -12,6 +12,8 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
+import requests as _requests
+
 import pandas as pd
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -1430,44 +1432,101 @@ def _collect_connection_slugs(driver, max_contacts: int) -> List[str]:
     return slugs[:max_contacts]
 
 
-def _enrich_connection_from_profile(driver, slug: str) -> Dict:
+def _fetch_profile_html_via_requests(slug: str, session: "LinkedInSession") -> Optional[str]:
     """
-    Visita el perfil de una conexión (y su overlay de contacto) usando el driver activo
-    para extraer todos los campos del CSV: nombre, posición, empresa, ubicación,
-    email, teléfono, foto, seguidores, conexiones, premium, creator, open_to_work.
+    Obtiene el HTML de un perfil de LinkedIn usando requests (sin Chrome).
+    Mucho más ligero en RAM que Selenium. Devuelve el HTML o None si falla.
+    LinkedIn hace SSR del JSON-LD con los datos básicos del perfil para los crawlers.
+    """
+    url = f"https://www.linkedin.com/in/{slug}/"
+    cookies_dict = {c["name"]: c["value"] for c in session.cookies if "linkedin.com" in c.get("domain", "")}
+    headers = {
+        "User-Agent": _CHROME_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.linkedin.com/mynetwork/",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    try:
+        resp = _requests.get(url, cookies=cookies_dict, headers=headers, timeout=20, allow_redirects=True)
+        if resp.status_code == 200 and "linkedin.com" in resp.url:
+            html = resp.text
+            # Verificar que no nos redirigió al login
+            if any(kw in html for kw in ('"givenName"', 'application/ld+json', 'profile-top-card')):
+                return html
+            _log.debug("fetch_requests %s: HTML sin datos de perfil (posible authwall)", slug)
+        else:
+            _log.debug("fetch_requests %s: status=%d url=%s", slug, resp.status_code, resp.url)
+    except Exception as e:
+        _log.debug("fetch_requests %s: error=%s", slug, e)
+    return None
+
+
+def _enrich_connection_from_profile(driver, slug: str, session: Optional["LinkedInSession"] = None) -> Dict:
+    """
+    Extrae todos los campos de un perfil de conexión.
+
+    Estrategia híbrida para minimizar uso de RAM en servidores con ≤1 GB:
+    1. Intenta obtener el HTML del perfil via requests (sin Chrome) → extrae datos básicos
+    2. Solo si requests falla, carga el perfil con Chrome
+    3. Usa Chrome únicamente para el overlay de contacto (email/teléfono)
     """
     url = f"https://www.linkedin.com/in/{slug}/"
     try:
-        # ── 1. Cargar página de perfil ─────────────────────────────────────────
-        driver.get(url)
-        try:
-            WebDriverWait(driver, BROWSER_PROFILE_WAIT).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-        except Exception:
-            pass
-        # Esperar a que la SPA inyecte JSON-LD estructurado
-        for _ in range(10):
-            html = driver.page_source
-            if "application/ld+json" in html or '"givenName"' in html:
-                break
-            time.sleep(1)
+        row = None
+        extra: Dict = {}
+        used_chrome_for_profile = False
 
-        html = driver.page_source
+        # ── 1. Intentar obtener HTML via requests (sin Chrome) ─────────────────
+        if session is not None:
+            html = _fetch_profile_html_via_requests(slug, session)
+            if html:
+                row = _extract_person_from_any_script(html)
+                _log.debug("enrich %s: datos básicos via requests (sin Chrome)", slug)
 
-        # ── 2. Extraer datos estructurados (JSON-LD) ───────────────────────────
-        row = _extract_person_from_any_script(html)
+        # ── 2. Fallback: cargar perfil con Chrome si requests no trajo datos ───
         if not row:
-            row = _extract_person_from_dom(driver)
+            _log.debug("enrich %s: requests no trajo datos, usando Chrome", slug)
+            driver.get(url)
+            try:
+                WebDriverWait(driver, BROWSER_PROFILE_WAIT).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+            except Exception:
+                pass
+            for _ in range(10):
+                html = driver.page_source
+                if "application/ld+json" in html or '"givenName"' in html:
+                    break
+                time.sleep(1)
+            html = driver.page_source
+            row = _extract_person_from_any_script(html)
+            if not row:
+                row = _extract_person_from_dom(driver)
+            extra = _extract_extra_from_dom(driver)
+            used_chrome_for_profile = True
 
-        # ── 3. Extraer campos extra del DOM (foto, seguidores, premium, etc.) ──
-        extra = _extract_extra_from_dom(driver)
+        # ── 3. Overlay de contacto via Chrome (email/teléfono) ─────────────────
+        # Si no usamos Chrome para el perfil, necesitamos navegar a la URL primero
+        # para que el driver esté en el dominio correcto antes de abrir el overlay.
+        if not used_chrome_for_profile:
+            driver.get(url)
+            try:
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+            except Exception:
+                pass
+            time.sleep(random.uniform(1.0, 2.0))
 
-        # ── 4. Visitar overlay de información de contacto ──────────────────────
-        time.sleep(random.uniform(1.5, 3.0))
+        time.sleep(random.uniform(1.0, 2.0))
         contact = _extract_contact_info_from_overlay(driver, slug)
 
-        # ── 5. Construir resultado completo ────────────────────────────────────
+        # ── 4. Construir resultado completo ────────────────────────────────────
         result = _build_connection_dict(
             slug,
             row.get("name") if row else None,
@@ -1478,7 +1537,6 @@ def _enrich_connection_from_profile(driver, slug: str) -> Dict:
             result["last_name"] = row.get("last_name")
             result["company"] = row.get("company")
             result["location"] = row.get("location")
-            # profile_photo puede venir del JSON-LD o del DOM
             result["profile_photo"] = row.get("profile_photo") or extra.get("profile_photo")
         else:
             result["profile_photo"] = extra.get("profile_photo")
@@ -1493,10 +1551,10 @@ def _enrich_connection_from_profile(driver, slug: str) -> Dict:
         result["is_connection"] = True
         result["profile_link"] = url
 
-        _log.debug(
-            "Enriquecido %s: name=%s pos=%s company=%s email=%s phone=%s",
-            slug, result.get("name"), result.get("position"),
-            result.get("company"), result.get("emails"), result.get("phones"),
+        _log.info(
+            "Enriquecido %s: name=%s company=%s email=%s phone=%s (chrome_perfil=%s)",
+            slug, result.get("name"), result.get("company"),
+            result.get("emails"), result.get("phones"), used_chrome_for_profile,
         )
         return result
 
