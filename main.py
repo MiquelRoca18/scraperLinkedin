@@ -471,6 +471,18 @@ def run_enrich(
                 mark_queue_error(username, slug, str(exc))
                 error_count += 1
                 visited += 1  # también cuenta: se hizo una petición
+                # Si el renderer de Chrome crasheó, recrear el driver para los siguientes perfiles
+                exc_str = str(exc).lower()
+                if any(kw in exc_str for kw in ("renderer", "session info", "no such session", "invalid session")):
+                    logger.warning("run_enrich: renderer crash — recreando WebDriver...")
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    driver = _create_driver_with_cookies(session, proxy=proxy)
+                    if not driver:
+                        logger.error("run_enrich: no se pudo recrear el WebDriver, abortando")
+                        break
 
             # Pausa anti-detección (no pausar tras el último)
             if visited < run_limit and visited < remaining_budget:

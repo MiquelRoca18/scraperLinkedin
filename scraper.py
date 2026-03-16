@@ -1486,7 +1486,7 @@ def _enrich_connection_from_profile(driver, slug: str) -> Dict:
 
     except Exception as e:
         _log.warning("Error enriqueciendo %s: %s", slug, e)
-        return _build_connection_dict(slug, None, None)
+        raise
 
 
 def scrape_connections_selenium(
