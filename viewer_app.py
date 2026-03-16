@@ -46,6 +46,8 @@ VIEWER_SECRET = os.environ.get("VIEWER_SECRET", "").strip()
 _scrape_lock = threading.Lock()
 _scrape_running = False
 _scrape_last_error = None
+_scrape_mode    = None
+_scrape_account = None
 
 # Estado de los logins en curso, uno por cuenta (thread-safe)
 _login_lock: threading.Lock = threading.Lock()
@@ -759,7 +761,7 @@ def account_session_status(username: str):
 # ── Scraping bajo demanda ─────────────────────────────────────────────────────
 
 def _run_scrape_background(mode: str, account: str | None, max_contacts: int | None):
-    global _scrape_running, _scrape_last_error
+    global _scrape_running, _scrape_last_error, _scrape_mode, _scrape_account
     try:
         os.environ["LINKEDIN_NO_BROWSER"] = "1"
         from main import run_index, run_enrich, run_scrape
@@ -777,6 +779,8 @@ def _run_scrape_background(mode: str, account: str | None, max_contacts: int | N
     finally:
         with _scrape_lock:
             _scrape_running = False
+            _scrape_mode    = None
+            _scrape_account = None
 
 
 @app.route("/api/accounts/<username>/contacts")
@@ -884,11 +888,13 @@ def trigger_scrape():
             _last_trigger_time[key] = now
     # ─────────────────────────────────────────────────────────────────────────
 
-    global _scrape_running
+    global _scrape_running, _scrape_mode, _scrape_account
     with _scrape_lock:
         if _scrape_running:
             return jsonify({"error": "Ya hay un scrape en ejecución", "running": True}), 409
         _scrape_running = True
+        _scrape_mode    = mode
+        _scrape_account = account
 
     thread = threading.Thread(
         target=_run_scrape_background,
@@ -910,7 +916,12 @@ def trigger_status():
     if not _check_auth():
         return jsonify({"error": "No autorizado"}), 401
     with _scrape_lock:
-        return jsonify({"running": _scrape_running, "last_error": _scrape_last_error})
+        return jsonify({
+            "running":    _scrape_running,
+            "mode":       _scrape_mode,
+            "account":    _scrape_account,
+            "last_error": _scrape_last_error,
+        })
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────

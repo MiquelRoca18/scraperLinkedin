@@ -772,6 +772,54 @@ $('confirm-ok').onclick     = () => _confirmCallback && _confirmCallback();
 $('modal-confirm').onclick  = e => { if (e.target === $('modal-confirm')) $('modal-confirm').classList.remove('open'); };
 
 /* ── Scrapeos ── */
+/* ── Banner de progreso global (se muestra mientras hay scrape activo) ────── */
+let _scrapePoller = null;
+let _scrapeWasRunning = false;
+
+function _startScrapePoller() {
+  if (_scrapePoller) return;
+  _scrapePoller = setInterval(async () => {
+    try {
+      const s = await (await fetch('/api/trigger-status', { headers: hdrs() })).json();
+      _updateScrapeBar(s);
+      if (s.running) {
+        _scrapeWasRunning = true;
+      } else if (_scrapeWasRunning) {
+        _scrapeWasRunning = false;
+        // Terminó: notificar y recargar cuentas
+        if (s.last_error) {
+          showToast('❌ El proceso terminó con error: ' + s.last_error, 'err');
+        } else {
+          showToast('✅ Proceso completado correctamente.', 'ok');
+        }
+        loadAccounts();
+      }
+    } catch { /* ignorar errores de red */ }
+  }, 3000);
+}
+
+function _updateScrapeBar(s) {
+  let bar = document.getElementById('_scrape-bar');
+  if (!s.running) {
+    if (bar) bar.remove();
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = '_scrape-bar';
+    bar.style.cssText = [
+      'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:900',
+      'background:#1d4ed8', 'color:#fff', 'font-size:.85rem', 'font-weight:600',
+      'padding:.45rem 1rem', 'display:flex', 'align-items:center', 'gap:.6rem',
+      'box-shadow:0 2px 8px rgba(0,0,0,.2)'
+    ].join(';');
+    document.body.prepend(bar);
+  }
+  const modeLabel = s.mode === 'index' ? '🗂 Actualizando lista' : '▶ Scrapeando perfiles';
+  const who = s.account ? ` · @${s.account}` : '';
+  bar.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-width:2px;border-color:rgba(255,255,255,.35);border-top-color:#fff"></span><span>${modeLabel}${who} en curso…</span>`;
+}
+
 async function triggerScrape(mode, account, btnEl) {
   const origText = btnEl ? btnEl.textContent : '';
   if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳'; }
@@ -782,15 +830,15 @@ async function triggerScrape(mode, account, btnEl) {
     else if (r.status === 409)                  showToast('Ya hay un scrape en ejecución.', 'warn');
     else if (data.error)                        showToast('Error: ' + data.error, 'err');
     else {
-      showToast(`${mode === 'index' ? '🗂 Actualizando lista' : '▶ Scraping'} iniciado para @${account}…`, 'ok');
-      const poll = setInterval(async () => {
-        const s = await (await fetch('/api/trigger-status', { headers: hdrs() })).json();
-        if (!s.running) { clearInterval(poll); loadAccounts(); }
-      }, 4000);
+      _scrapeWasRunning = true;
+      _startScrapePoller();
     }
   } catch (err) { showToast('Error: ' + err.message, 'err'); }
   finally { if (btnEl) { btnEl.disabled = false; btnEl.textContent = origText; } }
 }
+
+// Al cargar la página, arrancar el poller para detectar procesos ya en curso
+_startScrapePoller();
 
 function showToast(msg, type = 'ok') {
   let el = document.getElementById('_toast');
