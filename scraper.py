@@ -272,7 +272,11 @@ def _make_chrome_options(headless: bool = True, proxy: Optional[str] = None) -> 
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
 
-    # Flags para reducir consumo de memoria en servidores con RAM limitada (≤1 GB)
+    # Flags para reducir consumo de memoria en servidores con RAM limitada (≤1 GB).
+    # --single-process: el rendering ocurre en el proceso principal de Chrome en lugar
+    # de en procesos renderer separados. Elimina los crashes "Timed out receiving
+    # message from renderer" causados por OOM en el proceso renderer.
+    opts.add_argument("--single-process")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--disable-software-rasterizer")
     opts.add_argument("--disable-extensions")
@@ -288,6 +292,8 @@ def _make_chrome_options(headless: bool = True, proxy: Optional[str] = None) -> 
     opts.add_argument("--mute-audio")
     opts.add_argument("--safebrowsing-disable-auto-update")
     opts.add_argument("--js-flags=--max-old-space-size=256")
+    opts.add_argument("--disk-cache-size=1")
+    opts.add_argument("--media-cache-size=1")
 
     if proxy:
         try:
