@@ -265,10 +265,27 @@ def _make_chrome_options(headless: bool = True, proxy: Optional[str] = None) -> 
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--window-size=1280,800")
     opts.add_argument(f"--user-agent={_CHROME_UA}")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
+
+    # Flags para reducir consumo de memoria en servidores con RAM limitada (≤1 GB)
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-software-rasterizer")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-plugins")
+    opts.add_argument("--disable-images")
+    opts.add_argument("--disable-javascript-harmony-shipping")
+    opts.add_argument("--no-zygote")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--disable-translate")
+    opts.add_argument("--hide-scrollbars")
+    opts.add_argument("--mute-audio")
+    opts.add_argument("--safebrowsing-disable-auto-update")
+    opts.add_argument("--js-flags=--max-old-space-size=256")
 
     if proxy:
         try:
@@ -443,21 +460,44 @@ def init_client(account: Optional[str] = None, proxy: Optional[str] = None) -> L
     no_browser = os.environ.get("LINKEDIN_NO_BROWSER", "").strip() in ("1", "true", "yes")
     cookies = _load_cookies(session_path)
 
-    # Paso 1: comprobar si las cookies guardadas siguen siendo válidas
+    # Paso 1: comprobar si las cookies guardadas siguen siendo válidas.
+    # En servidores con poca RAM usamos una validación ligera (eager loading + timeout corto)
+    # para evitar que Chrome se quede sin memoria cargando LinkedIn completo.
     if cookies:
+        import stat as _stat
+
+        # Optimización para RAM baja: si el pkl tiene menos de 6h de antigüedad lo
+        # consideramos válido directamente sin abrir Chrome (LinkedIn no caduca tan rápido).
+        pkl_age_hours = 999
+        try:
+            pkl_mtime = os.path.getmtime(session_path)
+            pkl_age_hours = (time.time() - pkl_mtime) / 3600
+        except Exception:
+            pass
+
+        if pkl_age_hours < 6:
+            _log.info(
+                "Sesión reciente (%.1fh). Usando cookies directamente sin validar con Chrome.",
+                pkl_age_hours,
+            )
+            print(f"✅ Sesión activa (fichero reciente, {pkl_age_hours:.1f}h).")
+            # Intentar extraer username del nombre del archivo
+            username = account if account else None
+            return LinkedInSession(cookies, username=username)
+
         driver = None
         try:
-            driver = webdriver.Chrome(options=_make_chrome_options(headless=True, proxy=proxy))
+            opts = _make_chrome_options(headless=True, proxy=proxy)
+            opts.page_load_strategy = "eager"   # no esperar CSS/imágenes, solo DOM
+            driver = webdriver.Chrome(options=opts)
+            driver.set_page_load_timeout(45)     # falla rápido en vez de esperar 120s
             _apply_stealth(driver)
             driver.get("https://www.linkedin.com")
-            time.sleep(random.uniform(1.5, 2.5))
+            time.sleep(random.uniform(1.0, 1.5))
             _inject_cookies(driver, cookies)
-            driver.refresh()
-            time.sleep(random.uniform(2.0, 3.0))
             driver.get("https://www.linkedin.com/feed/")
-            time.sleep(random.uniform(2.0, 3.0))
+            time.sleep(random.uniform(1.5, 2.5))
             if _is_logged_in(driver):
-                # Aprovechar el driver activo para detectar el username (sin abrir otro Chrome)
                 username = _detect_username_from_driver(driver)
                 if username:
                     _log.info("Username detectado durante init_client: %s", username)
@@ -777,10 +817,10 @@ def _extract_person_from_any_script(html: str) -> Optional[Dict]:
             parsed = json.loads(content)
             items = parsed if isinstance(parsed, list) else [parsed]
             for item in items:
-                if isinstance(item, dict):
-                    row = _parse_person_from_json_ld(item)
-                    if row and (row.get("name") or row.get("position") or row.get("company")):
-                        return row
+                    if isinstance(item, dict):
+                        row = _parse_person_from_json_ld(item)
+                        if row and (row.get("name") or row.get("position") or row.get("company")):
+                            return row
         except (json.JSONDecodeError, TypeError):
             pass
     return None
