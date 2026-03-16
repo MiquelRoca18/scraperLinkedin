@@ -1097,17 +1097,19 @@ def _create_driver_with_cookies(
         opts = _make_chrome_options(headless=use_headless, proxy=proxy)
         opts.page_load_strategy = "eager"
         driver = webdriver.Chrome(options=opts)
-        driver.set_page_load_timeout(45)
+        driver.set_page_load_timeout(30)
     except Exception as e:
         _log.error("No se pudo crear el WebDriver: %s", e)
         return None
     try:
         _apply_stealth(driver)
+        # Cargamos solo la página base de LinkedIn para poder inyectar cookies
+        # (las cookies solo se pueden inyectar si el dominio ya está cargado).
+        # NO cargamos /feed/ aquí — eso lo haría cada visita de perfil.
+        # La sesión ya fue validada en init_client, no hace falta revalidar.
         driver.get("https://www.linkedin.com")
-        time.sleep(random.uniform(1.0, 1.5))
+        time.sleep(random.uniform(0.8, 1.2))
         _inject_cookies(driver, session.cookies)
-        driver.get("https://www.linkedin.com/feed/")
-        time.sleep(random.uniform(1.0, 1.5))
         return driver
     except Exception as e:
         _log.error("Error inyectando cookies en el driver: %s", e)
