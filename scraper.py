@@ -1489,14 +1489,20 @@ def _enrich_connection_from_profile(driver, slug: str, session: Optional["Linked
 
         # ── 1. Intentar obtener HTML via requests (sin Chrome) ─────────────────
         if session is not None:
+            _log.info("enrich %s: intentando via requests...", slug)
             html = _fetch_profile_html_via_requests(slug, session)
             if html:
                 row = _extract_person_from_any_script(html)
-                _log.debug("enrich %s: datos básicos via requests (sin Chrome)", slug)
+                if row:
+                    _log.info("enrich %s: datos via requests OK — name=%s", slug, row.get("name"))
+                else:
+                    _log.info("enrich %s: requests OK pero JSON-LD sin datos de persona", slug)
+            else:
+                _log.info("enrich %s: requests no devolvió HTML válido", slug)
 
         # ── 2. Fallback: cargar perfil con Chrome si requests no trajo datos ───
         if not row:
-            _log.debug("enrich %s: requests no trajo datos, usando Chrome", slug)
+            _log.info("enrich %s: fallback a Chrome para cargar perfil", slug)
             driver.get(url)
             try:
                 WebDriverWait(driver, BROWSER_PROFILE_WAIT).until(
@@ -1515,22 +1521,25 @@ def _enrich_connection_from_profile(driver, slug: str, session: Optional["Linked
                 row = _extract_person_from_dom(driver)
             extra = _extract_extra_from_dom(driver)
             used_chrome_for_profile = True
+            _log.info("enrich %s: Chrome perfil — name=%s", slug, row.get("name") if row else None)
 
         # ── 3. Overlay de contacto via Chrome (email/teléfono) ─────────────────
         # Si no usamos Chrome para el perfil, necesitamos navegar a la URL primero
         # para que el driver esté en el dominio correcto antes de abrir el overlay.
         if not used_chrome_for_profile:
+            _log.info("enrich %s: navegando a perfil para overlay de contacto", slug)
             driver.get(url)
             try:
                 WebDriverWait(driver, 15).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
-            except Exception:
-                pass
-            time.sleep(random.uniform(1.0, 2.0))
+            except Exception as e:
+                _log.warning("enrich %s: timeout cargando perfil para overlay: %s", slug, e)
 
         time.sleep(random.uniform(1.0, 2.0))
+        _log.info("enrich %s: extrayendo overlay de contacto...", slug)
         contact = _extract_contact_info_from_overlay(driver, slug)
+        _log.info("enrich %s: overlay OK — emails=%s phones=%s", slug, contact.get("emails"), contact.get("phones"))
 
         # ── 4. Construir resultado completo ────────────────────────────────────
         result = _build_connection_dict(
