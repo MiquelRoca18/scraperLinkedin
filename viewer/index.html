@@ -128,7 +128,9 @@
     .stat-label { font-size: .72rem; color: #666; margin-top: .1rem; }
     .acc-meta { font-size: .8rem; color: #777; display: flex; flex-direction: column; gap: .2rem; }
     .acc-meta span { display: flex; align-items: center; gap: .3rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-    .acc-actions { display: flex; gap: .4rem; flex-wrap: wrap; padding-top: .5rem; border-top: 1px solid #f0f0f2; }
+    .acc-actions { display: flex; gap: .4rem; flex-wrap: wrap; padding-top: .5rem; border-top: 1px solid #f0f0f2; align-items: center; }
+    .acc-index-row { display: flex; align-items: center; gap: .5rem; }
+    .index-deep-label { font-size: .8rem; color: #666; cursor: pointer; user-select: none; }
     .acc-card-add { border: 2px dashed #ccc; background: transparent; cursor: pointer; justify-content: center; align-items: center; min-height: 170px; color: #888; font-size: .92rem; gap: .4rem; transition: border-color .15s, color .15s; }
     .acc-card-add:hover { border-color: #0a66c2; color: #0a66c2; }
 
@@ -593,8 +595,13 @@ function renderAccounts(accounts) {
         ${acc.proxy ? `<span title="Proxy">🔗 ${esc(acc.proxy)}</span>` : '<span style="color:#aaa">Sin proxy</span>'}
       </div>
       <div class="acc-actions">
-        <button class="btn btn-outline btn-sm" data-action="index"  data-acc="${esc(acc.username)}"
-          title="Recorre tus conexiones y actualiza la cola (máx. 1 vez/hora)">🗂 Actualizar lista</button>
+        <span class="acc-index-row">
+          <button class="btn btn-outline btn-sm" data-action="index"  data-acc="${esc(acc.username)}"
+            title="Recorre tus conexiones y actualiza la cola (máx. 1 vez/hora)">🗂 Actualizar lista</button>
+          <label class="index-deep-label" title="Reindexado profundo: hasta 500 contactos, más scroll">
+            <input type="checkbox" class="index-deep-cb"> Profundo (500)
+          </label>
+        </span>
         <button class="btn btn-blue   btn-sm" data-action="enrich" data-acc="${esc(acc.username)}"
           title="Visita los perfiles pendientes y extrae datos (máx. 1 vez/20 min)">▶ Scrapear perfiles</button>
         <button class="btn btn-teal   btn-sm" data-view-contacts="${esc(acc.username)}"
@@ -824,7 +831,10 @@ async function triggerScrape(mode, account, btnEl) {
   const origText = btnEl ? btnEl.textContent : '';
   if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳'; }
   try {
-    const r    = await fetch('/api/trigger-scrape', { method: 'POST', headers: hdrs(true), body: JSON.stringify({ mode, account }) });
+    const deep = mode === 'index' && btnEl && btnEl.closest('.acc-card')?.querySelector('.index-deep-cb')?.checked === true;
+    const body = { mode, account };
+    if (deep) body.deep = true;
+    const r    = await fetch('/api/trigger-scrape', { method: 'POST', headers: hdrs(true), body: JSON.stringify(body) });
     const data = await r.json();
     if (r.status === 429 && data.rate_limited) showToast(data.error, 'warn');
     else if (r.status === 409)                  showToast('Ya hay un scrape en ejecución.', 'warn');

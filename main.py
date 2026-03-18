@@ -432,7 +432,13 @@ def run_enrich(
     run_limit = max_contacts_override or MAX_CONTACTS_PER_RUN
     # En servidores con ≤1 GB RAM, Chrome acumula memoria entre perfiles y crashea.
     # Reiniciamos proactivamente cada N perfiles para liberar RAM antes del OOM.
-    DRIVER_RESTART_EVERY = 3
+    # En local puedes desactivarlo con DRIVER_RESTART_EVERY=0 para que NO cierre/abra Chrome.
+    try:
+        DRIVER_RESTART_EVERY = int(os.getenv("DRIVER_RESTART_EVERY", "3"))
+    except ValueError:
+        DRIVER_RESTART_EVERY = 3
+    if DRIVER_RESTART_EVERY < 0:
+        DRIVER_RESTART_EVERY = 3
 
     def _make_fresh_driver():
         drv = _create_driver_with_cookies(session, proxy=proxy)
@@ -464,7 +470,7 @@ def run_enrich(
                     continue  # no cuenta contra el presupuesto ni visita el perfil
 
             # ── Reinicio proactivo de Chrome cada N perfiles ──────────────────
-            if visited > 0 and visited % DRIVER_RESTART_EVERY == 0:
+            if DRIVER_RESTART_EVERY and visited > 0 and visited % DRIVER_RESTART_EVERY == 0:
                 logger.info("run_enrich: reiniciando Chrome tras %d perfiles para liberar RAM...", visited)
                 try:
                     driver.quit()

@@ -760,8 +760,17 @@ def account_session_status(username: str):
 
 # ── Scraping bajo demanda ─────────────────────────────────────────────────────
 
-def _run_scrape_background(mode: str, account: str | None, max_contacts: int | None):
+def _run_scrape_background(
+    mode: str, account: str | None, max_contacts: int | None, index_deep: bool = False
+):
     global _scrape_running, _scrape_last_error, _scrape_mode, _scrape_account
+    # Para reindexado profundo, fijar env ANTES de importar (scraper lee INDEX_* en tiempo de ejecución)
+    old_index_max = old_index_rounds = None
+    if mode == "index" and index_deep:
+        old_index_max = os.environ.get("INDEX_MAX_CONTACTS")
+        old_index_rounds = os.environ.get("INDEX_MAX_SCROLL_ROUNDS")
+        os.environ["INDEX_MAX_CONTACTS"] = "500"
+        os.environ["INDEX_MAX_SCROLL_ROUNDS"] = "80"
     try:
         os.environ["LINKEDIN_NO_BROWSER"] = "1"
         from main import run_index, run_enrich, run_scrape
@@ -777,6 +786,15 @@ def _run_scrape_background(mode: str, account: str | None, max_contacts: int | N
         with _scrape_lock:
             _scrape_last_error = str(e)
     finally:
+        if mode == "index" and index_deep:
+            if old_index_max is not None:
+                os.environ["INDEX_MAX_CONTACTS"] = old_index_max
+            elif "INDEX_MAX_CONTACTS" in os.environ:
+                del os.environ["INDEX_MAX_CONTACTS"]
+            if old_index_rounds is not None:
+                os.environ["INDEX_MAX_SCROLL_ROUNDS"] = old_index_rounds
+            elif "INDEX_MAX_SCROLL_ROUNDS" in os.environ:
+                del os.environ["INDEX_MAX_SCROLL_ROUNDS"]
         with _scrape_lock:
             _scrape_running = False
             _scrape_mode    = None
@@ -845,7 +863,8 @@ def trigger_scrape():
     Body JSON opcional:
       { "mode": "enrich"|"index"|"legacy",
         "account": "slug-de-linkedin",
-        "max_contacts": 20 }
+        "max_contacts": 20,
+        "deep": true }   (solo mode=index: reindexado profundo, hasta 500 slugs)
 
     Aplica un mínimo de tiempo entre ejecuciones para proteger la cuenta:
       - enrich: 20 minutos mínimo entre runs del mismo usuario
@@ -859,6 +878,7 @@ def trigger_scrape():
     mode        = body.get("mode", "legacy")
     account     = body.get("account") or None
     max_contacts = body.get("max_contacts") or None
+    index_deep  = bool(body.get("deep")) and mode == "index"
 
     if mode not in ("index", "enrich", "legacy"):
         return jsonify({"error": f"Modo no válido: {mode}"}), 400
@@ -898,7 +918,7 @@ def trigger_scrape():
 
     thread = threading.Thread(
         target=_run_scrape_background,
-        args=(mode, account, max_contacts),
+        args=(mode, account, max_contacts, index_deep),
         daemon=True,
     )
     thread.start()

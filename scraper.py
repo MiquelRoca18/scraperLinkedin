@@ -53,8 +53,13 @@ SESSIONS_DIR              = os.getenv("SESSIONS_DIR", "sessions")
 HEADLESS                  = os.getenv("HEADLESS", "true").lower() != "false"
 
 # LinkedIn redirige invite-manager/ a catch-up/ — usamos la URL real
-_CONNECTIONS_URL        = "https://www.linkedin.com/mynetwork/catch-up/connections/"
+_CONNECTIONS_URL        = "https://www.linkedin.com/mynetwork/invite-connect/connections/"
 _CONNECTIONS_SEARCH_URL = "https://www.linkedin.com/search/results/people/?network=%5B%22F%22%5D&origin=MEMBER_PROFILE_CANNED_SEARCH"
+
+# Nombres de env para límites del index (leídos en tiempo de ejecución en collect_all_slugs).
+INDEX_ENV_MAX_CONTACTS      = "INDEX_MAX_CONTACTS"
+INDEX_ENV_MAX_SCROLL_ROUNDS = "INDEX_MAX_SCROLL_ROUNDS"
+INDEX_ENV_USE_RECENTLY_ADDED = "INDEX_USE_RECENTLY_ADDED"
 
 
 # ── Sesión ─────────────────────────────────────────────────────────────────────
@@ -1397,7 +1402,7 @@ def _collect_connection_slugs(driver, max_contacts: int) -> List[str]:
                 continue
         return new
 
-    # Intentar primero la página de conexiones (/mynetwork/catch-up/connections/)
+    # Intentar primero la página de conexiones (/mynetwork/invite-connect/connections/)
     _log.info("Slug collection: cargando %s", _CONNECTIONS_URL)
     driver.get(_CONNECTIONS_URL)
     time.sleep(random.uniform(3.0, 5.0))
@@ -1588,7 +1593,7 @@ def scrape_connections_selenium(
     Si no, crea uno propio y lo cierra al finalizar.
 
     Estrategia en dos fases:
-    1. Recopilación de slugs: navega por /mynetwork/catch-up/connections/ con scroll
+    1. Recopilación de slugs: navega por /mynetwork/invite-connect/connections/ con scroll
        para obtener todos los slugs de conexiones. Si no consigue suficientes, usa
        la búsqueda de primer grado como fallback.
     2. Enriquecimiento: visita el perfil de cada conexión para extraer nombre,
@@ -1753,7 +1758,13 @@ def collect_all_slugs(session: LinkedInSession, proxy: Optional[str] = None) -> 
     proxy: proxy a usar para esta sesión ('host:port' o 'user:pass@host:port').
     Devuelve la lista de slugs únicos encontrados.
     """
-    _log.info("collect_all_slugs: iniciando recopilación del índice de conexiones")
+    index_max_contacts = max(20, min(int(os.getenv(INDEX_ENV_MAX_CONTACTS, "100")), 1000))
+    index_max_scroll   = max(5, min(int(os.getenv(INDEX_ENV_MAX_SCROLL_ROUNDS, "25")), 120))
+    index_recently    = os.getenv(INDEX_ENV_USE_RECENTLY_ADDED, "true").lower() == "true"
+    _log.info(
+        "collect_all_slugs: iniciando (max=%d, scroll_rounds=%d, recently_added=%s)",
+        index_max_contacts, index_max_scroll, index_recently,
+    )
     driver = _create_driver_with_cookies(session, proxy=proxy)
     if not driver:
         _log.error("collect_all_slugs: no se pudo crear el WebDriver")
@@ -1772,6 +1783,8 @@ def collect_all_slugs(session: LinkedInSession, proxy: Optional[str] = None) -> 
         new = 0
         links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
         for a in links:
+            if len(slugs) >= index_max_contacts:
+                break
             try:
                 href = a.get_attribute("href") or ""
                 m = re.search(r"linkedin\.com/in/([^/?#]+)", href)
@@ -1789,56 +1802,67 @@ def collect_all_slugs(session: LinkedInSession, proxy: Optional[str] = None) -> 
                 continue
         return new
 
+    def _click_next_search_page() -> bool:
+        """
+        En la búsqueda de personas (network=F) LinkedIn pagina (10 resultados/página).
+        Este helper intenta clicar el botón Siguiente/Next. Devuelve True si navegó.
+        """
+        xpaths = [
+            "//button[contains(@aria-label,'Next') and not(@disabled)]",
+            "//button[contains(@aria-label,'Siguiente') and not(@disabled)]",
+            "//button[contains(.,'Next') and not(@disabled)]",
+            "//button[contains(.,'Siguiente') and not(@disabled)]",
+            "//li[contains(@class,'artdeco-pagination__indicator--number')]/following-sibling::li//button[contains(@aria-label,'Next') and not(@disabled)]",
+        ]
+        for xp in xpaths:
+            try:
+                btns = driver.find_elements(By.XPATH, xp)
+                for b in btns:
+                    if b.is_displayed() and b.is_enabled():
+                        driver.execute_script("arguments[0].click();", b)
+                        time.sleep(random.uniform(2.0, 3.5))
+                        return True
+            except Exception:
+                continue
+        return False
+
     try:
-        # ── 1. Página de conexiones ────────────────────────────────────────────
-        _log.info("collect_all_slugs: cargando %s", _CONNECTIONS_URL)
-        driver.get(_CONNECTIONS_URL)
-        time.sleep(random.uniform(3.0, 5.0))
+        # ── ÚNICA FUENTE: búsqueda de primer grado con paginación ──────────────
+        _log.info("collect_all_slugs: cargando búsqueda de primer grado (paginada)")
+        driver.get(_CONNECTIONS_SEARCH_URL)
+        time.sleep(random.uniform(3.5, 5.5))
 
         if any(kw in driver.current_url for kw in ("authwall", "/login", "checkpoint")):
             _log.warning("collect_all_slugs: sesión no válida, redirigido a login")
             session.on_block = True
             return []
 
+        # Máximo páginas = límite de contactos / 10 (resultados por página) con margen
+        max_pages = max(1, min(200, (index_max_contacts // 10) + 5))
+        page = 1
         no_progress = 0
-        for _ in range(60):  # máx. 60 scrolls (~600 conexiones aprox.)
+        while page <= max_pages and len(slugs) < index_max_contacts:
             prev = len(slugs)
             _harvest_page()
+            _log.info("collect_all_slugs: page %d -> +%d (total=%d)", page, len(slugs) - prev, len(slugs))
             if len(slugs) == prev:
                 no_progress += 1
-                if no_progress >= 5:
-                    _log.info("collect_all_slugs: sin nuevos slugs tras 5 rondas en /mynetwork/")
-                    break
-                time.sleep(random.uniform(1.5, 3.0))
             else:
                 no_progress = 0
 
-            steps = random.randint(3, 5)
-            for _ in range(steps):
-                driver.execute_script(f"window.scrollBy(0, {random.randint(300, 600)});")
-                time.sleep(random.uniform(0.15, 0.4))
-            time.sleep(random.uniform(0.8, 1.8))
+            # Si 2 páginas seguidas no aportan slugs, probablemente se acabó
+            if no_progress >= 2:
+                break
 
-        _log.info("collect_all_slugs: %d slugs tras /mynetwork/", len(slugs))
+            if len(slugs) >= index_max_contacts:
+                break
 
-        # ── 2. Búsqueda de primer grado (complementa /mynetwork/) ────────────
-        _log.info("collect_all_slugs: cargando búsqueda de primer grado")
-        driver.get(_CONNECTIONS_SEARCH_URL)
-        time.sleep(random.uniform(3.5, 5.5))
-
-        no_progress = 0
-        for _ in range(40):
-            prev = len(slugs)
-            _harvest_page()
-            if len(slugs) == prev:
-                no_progress += 1
-                if no_progress >= 5:
-                    break
-                time.sleep(random.uniform(1.5, 2.5))
-            else:
-                no_progress = 0
-            driver.execute_script(f"window.scrollBy(0, {random.randint(400, 700)});")
-            time.sleep(random.uniform(1.0, 2.0))
+            # Ir a la siguiente página
+            if not _click_next_search_page():
+                break
+            page += 1
+            # Pausa anti-detección entre páginas
+            time.sleep(random.uniform(1.5, 3.0))
 
         _log.info("collect_all_slugs: %d slugs totales recopilados", len(slugs))
 
@@ -1850,4 +1874,4 @@ def collect_all_slugs(session: LinkedInSession, proxy: Optional[str] = None) -> 
         except Exception:
             pass
 
-    return slugs
+    return slugs[:index_max_contacts]
